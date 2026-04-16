@@ -111,6 +111,14 @@ fn_url = aws.lambda_.FunctionUrl(
     ),
 )
 
+aws.lambda_.Permission(
+    "summarise-url-public",
+    action="lambda:InvokeFunctionUrl",
+    function=summarise_fn.name,
+    principal="*",
+    function_url_auth_type="NONE",
+)
+
 # ── Exports ───────────────────────────────────────────────────────────────────
 pulumi.export("bucket", site.bucket_name)
 pulumi.export("distribution_id", site.distribution_id)
