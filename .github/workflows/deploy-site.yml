@@ -3,7 +3,13 @@ name: Deploy Site
 on:
   push:
     branches: [main]
-    paths: ["index.html", "*.css", "*.js", "public/**"]
+    paths:
+      - "index.html"
+      - "src/**"
+      - "public/**"
+      - "package.json"
+      - "vite.config.js"
+      - "tailwind.config.js"
   workflow_dispatch:
 
 permissions:
@@ -34,8 +40,20 @@ jobs:
           role-to-assume: ${{ steps.config.outputs.DEPLOY_ROLE_ARN }}
           aws-region: ${{ steps.config.outputs.AWS_REGION }}
 
-      - name: Deploy
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build
+        env:
+          VITE_GEMINI_API_KEY: ${{ secrets.VITE_GEMINI_API_KEY }}
+        run: npm run build
+
+      - name: Sync to S3
         env:
           BUCKET: ${{ steps.config.outputs.BUCKET }}
+        run: aws s3 sync dist/ s3://$BUCKET --delete
+
+      - name: Invalidate CloudFront
+        env:
           CF_DISTRIBUTION_ID: ${{ steps.config.outputs.CF_DISTRIBUTION_ID }}
-        run: make deploy
+        run: aws cloudfront create-invalidation --distribution-id $CF_DISTRIBUTION_ID --paths '/*'

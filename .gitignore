@@ -1,2 +1,4 @@
 .env
+node_modules/
+dist/
 infra/pulumi/__pycache__/

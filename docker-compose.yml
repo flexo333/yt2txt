@@ -1,4 +1,16 @@
 services:
+  node:
+    image: node:20-alpine
+    working_dir: /app
+    volumes:
+      - .:/app
+      - node_modules:/app/node_modules
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      VITE_GEMINI_API_KEY: ${VITE_GEMINI_API_KEY:-}
+
   pulumi:
     build: ./infra/pulumi
     working_dir: /infra
@@ -31,3 +43,4 @@ services:
 
 volumes:
   pulumi_plugins:
+  node_modules:
