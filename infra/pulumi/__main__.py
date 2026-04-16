@@ -98,11 +98,12 @@ summarise_fn = aws.lambda_.Function(
     }),
 )
 
-# ── API Gateway HTTP API ──────────────────────────────────────────────────────
-api = aws.apigatewayv2.Api(
-    "summarise-api",
-    protocol_type="HTTP",
-    cors_configuration=aws.apigatewayv2.ApiCorsConfigurationArgs(
+# ── Lambda Function URL (no APIGW 29 s timeout) ───────────────────────────────
+fn_url = aws.lambda_.FunctionUrl(
+    "summarise-url",
+    function_name=summarise_fn.name,
+    authorization_type="NONE",
+    cors=aws.lambda_.FunctionUrlCorsArgs(
         allow_origins=["https://yt2txt.willbright.link", "http://localhost:5173"],
         allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["content-type"],
@@ -110,40 +111,10 @@ api = aws.apigatewayv2.Api(
     ),
 )
 
-integration = aws.apigatewayv2.Integration(
-    "summarise-integration",
-    api_id=api.id,
-    integration_type="AWS_PROXY",
-    integration_uri=summarise_fn.invoke_arn,
-    payload_format_version="2.0",
-)
-
-aws.apigatewayv2.Route(
-    "summarise-route",
-    api_id=api.id,
-    route_key="$default",
-    target=integration.id.apply(lambda id: f"integrations/{id}"),
-)
-
-aws.apigatewayv2.Stage(
-    "summarise-stage",
-    api_id=api.id,
-    name="$default",
-    auto_deploy=True,
-)
-
-aws.lambda_.Permission(
-    "summarise-apigw-invoke",
-    action="lambda:InvokeFunction",
-    function=summarise_fn.name,
-    principal="apigateway.amazonaws.com",
-    source_arn=api.execution_arn.apply(lambda arn: f"{arn}/*/*"),
-)
-
 # ── Exports ───────────────────────────────────────────────────────────────────
 pulumi.export("bucket", site.bucket_name)
 pulumi.export("distribution_id", site.distribution_id)
 pulumi.export("cloudfront_domain", site.distribution_domain.apply(lambda d: f"https://{d}"))
 pulumi.export("aws_region", pulumi.Config("aws").require("region"))
-pulumi.export("api_url", api.api_endpoint)
+pulumi.export("api_url", fn_url.function_url)
 pulumi.export("dynamodb_table", table.name)
