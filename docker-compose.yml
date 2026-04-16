@@ -34,6 +34,7 @@ services:
       AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
       PULUMI_ACCESS_TOKEN: ${PULUMI_ACCESS_TOKEN:-}
       PULUMI_STACK: ${PULUMI_STACK:-prod}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
 
   awscli:
     image: amazon/aws-cli:2.17.0
