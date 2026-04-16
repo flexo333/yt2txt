@@ -9,13 +9,21 @@ services:
       - path: .env
         required: false
     environment:
-      VITE_GEMINI_API_KEY: ${VITE_GEMINI_API_KEY:-}
+      VITE_LAMBDA_URL: ${VITE_LAMBDA_URL:-}
+
+  node-lambda:
+    image: node:20-alpine
+    platform: linux/amd64
+    working_dir: /lambda
+    volumes:
+      - ./backend/summarise:/lambda
 
   pulumi:
     build: ./infra/pulumi
     working_dir: /infra
     volumes:
       - ./infra/pulumi:/infra
+      - ./backend:/backend
       - pulumi_plugins:/root/.pulumi/plugins
     env_file:
       - path: .env

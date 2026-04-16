@@ -1,4 +1,5 @@
 .env
 node_modules/
+backend/summarise/node_modules/
 dist/
 infra/pulumi/__pycache__/

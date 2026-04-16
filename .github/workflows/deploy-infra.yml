@@ -3,9 +3,9 @@ name: Deploy Infrastructure
 on:
   push:
     branches: [main]
-    paths: ["infra/pulumi/**"]
+    paths: ["infra/pulumi/**", "backend/**"]
   pull_request:
-    paths: ["infra/pulumi/**"]
+    paths: ["infra/pulumi/**", "backend/**"]
   workflow_dispatch:
 
 permissions:
@@ -43,4 +43,5 @@ jobs:
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         env:
           PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: make infra-up

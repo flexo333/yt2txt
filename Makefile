@@ -16,6 +16,10 @@ help:
 install: ## Install npm dependencies
 	docker compose run --rm node npm install
 
+.PHONY: build-lambda
+build-lambda: ## Install Lambda npm deps into backend/summarise/node_modules/ (linux/amd64)
+	docker compose run --rm node-lambda npm install
+
 .PHONY: dev
 dev: ## Start Vite dev server → http://localhost:5173
 	docker compose run --rm --service-ports node npm run dev -- --host
@@ -25,12 +29,12 @@ build: install ## Build for production (outputs to dist/)
 	docker compose run --rm node npm run build
 
 .PHONY: infra-preview
-infra-preview: ## Preview infra changes
+infra-preview: build-lambda ## Preview infra changes
 	docker compose build pulumi
 	docker compose run --rm pulumi preview
 
 .PHONY: infra-up
-infra-up: ## Apply infra changes
+infra-up: build-lambda ## Apply infra changes
 	docker compose build pulumi
 	docker compose run --rm pulumi up $(PULUMI_YES)
 

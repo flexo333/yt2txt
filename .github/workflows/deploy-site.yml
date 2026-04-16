@@ -10,6 +10,7 @@ on:
       - "package.json"
       - "vite.config.js"
       - "tailwind.config.js"
+      - "backend/**"
   workflow_dispatch:
 
 permissions:
@@ -34,6 +35,7 @@ jobs:
           echo "BUCKET=$(pulumi stack output bucket -s flexo333/flexo333-yt2txt/prod)" >> $GITHUB_OUTPUT
           echo "CF_DISTRIBUTION_ID=$(pulumi stack output distribution_id -s flexo333/flexo333-yt2txt/prod)" >> $GITHUB_OUTPUT
           echo "AWS_REGION=$(pulumi stack output aws_region -s flexo333/flexo333-yt2txt/prod)" >> $GITHUB_OUTPUT
+          echo "LAMBDA_URL=$(pulumi stack output api_url -s flexo333/flexo333-yt2txt/prod)" >> $GITHUB_OUTPUT
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -45,7 +47,7 @@ jobs:
 
       - name: Build
         env:
-          VITE_GEMINI_API_KEY: ${{ secrets.VITE_GEMINI_API_KEY }}
+          VITE_LAMBDA_URL: ${{ steps.config.outputs.LAMBDA_URL }}
         run: npm run build
 
       - name: Sync to S3
