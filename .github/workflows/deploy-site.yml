@@ -1,0 +1,41 @@
+name: Deploy Site
+
+on:
+  push:
+    branches: [main]
+    paths: ["index.html", "*.css", "*.js", "public/**"]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pulumi/setup-pulumi@v2
+
+      - name: Get config
+        id: config
+        env:
+          PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}
+        run: |
+          pulumi login
+          echo "DEPLOY_ROLE_ARN=$(pulumi stack output deploy_role_arn -s flexo333/flexo333-ingress/prod)" >> $GITHUB_OUTPUT
+          echo "BUCKET=$(pulumi stack output bucket -s flexo333/flexo333-yt2txt/prod)" >> $GITHUB_OUTPUT
+          echo "CF_DISTRIBUTION_ID=$(pulumi stack output distribution_id -s flexo333/flexo333-yt2txt/prod)" >> $GITHUB_OUTPUT
+          echo "AWS_REGION=$(pulumi stack output aws_region -s flexo333/flexo333-yt2txt/prod)" >> $GITHUB_OUTPUT
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ steps.config.outputs.DEPLOY_ROLE_ARN }}
+          aws-region: ${{ steps.config.outputs.AWS_REGION }}
+
+      - name: Deploy
+        env:
+          BUCKET: ${{ steps.config.outputs.BUCKET }}
+          CF_DISTRIBUTION_ID: ${{ steps.config.outputs.CF_DISTRIBUTION_ID }}
+        run: make deploy
