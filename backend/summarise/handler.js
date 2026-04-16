@@ -66,7 +66,10 @@ async function listSummaries(origin) {
   const summaries = (result.Items || [])
     .sort((a, b) => b.createdAt - a.createdAt)
     .slice(0, 50)
-    .map(({ url, title, date, createdAt }) => ({ url, title, date, createdAt }));
+    .map(({ url, title, date, createdAt, markdown }) => ({
+      url, title, date, createdAt,
+      summary: (markdown || '').slice(0, 8000),
+    }));
 
   return {
     statusCode: 200,
