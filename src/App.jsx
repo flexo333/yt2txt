@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GoogleGenAI } from "@google/genai";
 import ReactMarkdown from 'react-markdown';
 
 // --- CONFIGURATION ---
 const API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
-const genAI = new GoogleGenerativeAI(API_KEY);
+const ai = new GoogleGenAI({ apiKey: API_KEY });
 
 const SYSTEM_PROMPT = `You are a professional content editor. I will provide a YouTube URL.
 Use the YouTube tool to extract the transcript and key visuals.
@@ -31,11 +31,19 @@ const BrightBlogApp = () => {
     if (!url) return;
     setLoading(true);
     try {
-      // Using Gemini 1.5 Flash for speed and high context window
-      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-      const result = await model.generateContent([SYSTEM_PROMPT, `Process this video: ${url}`]);
-      const response = await result.response;
-      const text = response.text();
+      const response = await ai.models.generateContent({
+        model: "gemini-2.0-flash",
+        contents: [
+          {
+            parts: [
+              // Pass the YouTube URL as a video part so Gemini actually processes the video
+              { fileData: { fileUri: url } },
+              { text: SYSTEM_PROMPT },
+            ],
+          },
+        ],
+      });
+      const text = response.text;
 
       setContent(text);
 
