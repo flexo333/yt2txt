@@ -105,7 +105,7 @@ fn_url = aws.lambda_.FunctionUrl(
     authorization_type="NONE",
     cors=aws.lambda_.FunctionUrlCorsArgs(
         allow_origins=["https://yt2txt.willbright.link", "http://localhost:5173"],
-        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_methods=["GET", "POST"],
         allow_headers=["content-type"],
         max_age=300,
     ),
