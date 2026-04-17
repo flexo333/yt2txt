@@ -99,6 +99,16 @@ summarise_fn = aws.lambda_.Function(
 )
 
 # ── Lambda Function URL (no APIGW 29 s timeout) ───────────────────────────────
+# Permission must exist before the URL is created; otherwise AWS caches a
+# "no public access" authz state on the URL that survives later policy edits.
+url_permission = aws.lambda_.Permission(
+    "summarise-url-public",
+    action="lambda:InvokeFunctionUrl",
+    function=summarise_fn.name,
+    principal="*",
+    function_url_auth_type="NONE",
+)
+
 fn_url = aws.lambda_.FunctionUrl(
     "summarise-url",
     function_name=summarise_fn.name,
@@ -109,14 +119,7 @@ fn_url = aws.lambda_.FunctionUrl(
         allow_headers=["content-type"],
         max_age=300,
     ),
-)
-
-aws.lambda_.Permission(
-    "summarise-url-public",
-    action="lambda:InvokeFunctionUrl",
-    function=summarise_fn.name,
-    principal="*",
-    function_url_auth_type="NONE",
+    opts=pulumi.ResourceOptions(depends_on=[url_permission]),
 )
 
 # ── Exports ───────────────────────────────────────────────────────────────────
@@ -125,4 +128,5 @@ pulumi.export("distribution_id", site.distribution_id)
 pulumi.export("cloudfront_domain", site.distribution_domain.apply(lambda d: f"https://{d}"))
 pulumi.export("aws_region", pulumi.Config("aws").require("region"))
 pulumi.export("api_url", fn_url.function_url)
+pulumi.export("lambda_function_name", summarise_fn.name)
 pulumi.export("dynamodb_table", table.name)
