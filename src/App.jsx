@@ -4,12 +4,12 @@ import ReactMarkdown from 'react-markdown';
 const LAMBDA_URL = import.meta.env.VITE_LAMBDA_URL;
 
 const MODEL_OPTIONS = [
-  { label: 'Gemma 4 26B', value: 'gemma-4-26b-a4b-it' },
-  { label: 'Gemma 4 31B', value: 'gemma-4-31b-a4b-it' },
-  { label: 'Gemini 2.5 Flash', value: 'gemini-2.5-flash' },
-  { label: 'Gemini 3 Flash', value: 'gemini-3-flash-preview' },
-  { label: 'Gemini 3.1 Flash Lite', value: 'gemini-3.1-flash-lite' },
-  { label: 'Gemini 2.5 Flash Lite', value: 'gemini-2.5-flash-lite' },
+  { label: 'Gemma 4 26B', value: 'models/gemma-4-26b-a4b-it' },
+  { label: 'Gemma 4 31B', value: 'models/gemma-4-31b-it' },
+  { label: 'Gemini 2.5 Flash', value: 'models/gemini-2.5-flash' },
+  { label: 'Gemini 3 Flash', value: 'models/gemini-3-flash-preview' },
+  { label: 'Gemini 3.1 Flash Lite', value: 'models/gemini-flash-lite-latest' },
+  { label: 'Gemini 2.5 Flash Lite', value: 'models/gemini-2.5-flash-lite' },
 ];
 
 const BrightBlogApp = () => {
@@ -19,7 +19,7 @@ const BrightBlogApp = () => {
   const [history, setHistory] = useState([]);
   const [page, setPage] = useState('home');
   const [detailItem, setDetailItem] = useState(null);
-  const [model, setModel] = useState('gemini-3-flash-preview');
+  const [model, setModel] = useState('models/gemini-3-flash-preview');
 
   useEffect(() => {
     if (!LAMBDA_URL) return;

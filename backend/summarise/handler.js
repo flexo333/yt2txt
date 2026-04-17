@@ -15,17 +15,18 @@ Instructions:
 5. Key Insights: Use headers for main topics.
  Constraint: Skip the ads and random filler conversation.
  Output: Distill the insights and a timestamp link like this: [HH:MM:SS](https://youtu.be/VIDEO_ID?t=SECONDS).
+ Get the video ID from the URL and use it in the timestamp link.
 Tone: Clear, direct, and brief. Use plain Markdown. No fancy jargon.`;
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TABLE = process.env.DYNAMODB_TABLE;
 
 const ALLOWED_MODELS = {
-  "Gemma 4 26B": "gemma-4-26b-a4b-it",
-  "Gemma 4 31B": "gemma-4-31b-a4b-it",
-  "Gemini 2.5 Flash": "gemini-2.5-flash",
-  "Gemini 3 Flash": "gemini-3-flash-preview",
-  "Gemini 3.1 Flash Lite": "gemini-3.1-flash-lite",
-  "Gemini 2.5 Flash Lite": "gemini-2.5-flash-lite",
+  "Gemma 4 26B": "models/gemma-4-26b-a4b-it",
+  "Gemma 4 31B": "models/gemma-4-31b-it",
+  "Gemini 2.5 Flash": "models/gemini-2.5-flash",
+  "Gemini 3 Flash": "models/gemini-3-flash-preview",
+  "Gemini 3.1 Flash Lite": "models/gemini-flash-lite-latest",
+  "Gemini 2.5 Flash Lite": "models/gemini-2.5-flash-lite",
 };
 
 const DEFAULT_MODEL = ALLOWED_MODELS["Gemini 3 Flash"];
@@ -42,7 +43,7 @@ function isAllowedModel(model) {
 }
 
 async function summarise(url, model = DEFAULT_MODEL) {
-  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY, apiVersion: "v1beta" });
   const response = await ai.models.generateContent({
     model,
     contents: [{
@@ -66,6 +67,22 @@ async function summarise(url, model = DEFAULT_MODEL) {
     statusCode: 200,
     headers: JSON_HEADERS,
     body: JSON.stringify({ markdown, title, url, date }),
+  };
+}
+
+async function listModels() {
+  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY, apiVersion: "v1beta" });
+  const pager = await ai.models.list({});
+  const names = [];
+  for await (const model of pager) {
+    if (model?.name) names.push(model.name);
+    if (names.length >= 200) break;
+  }
+
+  return {
+    statusCode: 200,
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ models: names }),
   };
 }
 
@@ -114,6 +131,10 @@ export async function handler(event) {
     }
 
     if (method === "GET") {
+      const shouldListModels = event.queryStringParameters?.models === "1";
+      if (shouldListModels) {
+        return await listModels();
+      }
       return await listSummaries();
     }
 
