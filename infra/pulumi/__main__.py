@@ -90,7 +90,7 @@ summarise_fn = aws.lambda_.Function(
     handler="handler.handler",
     role=lambda_role.arn,
     code=summarise_zip,
-    timeout=120,
+    timeout=360,
     memory_size=256,
     environment=aws.lambda_.FunctionEnvironmentArgs(variables={
         "DYNAMODB_TABLE": table.name,

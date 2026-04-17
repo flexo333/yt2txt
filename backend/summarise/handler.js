@@ -6,18 +6,29 @@ const SYSTEM_PROMPT = `Role: You are a no-nonsense Content Analyst. Your goal is
 
 Task: Analyze the YouTube video at the provided URL. Use the YouTube tool to get the transcript.
 Instructions:
-1. Direct Title: Give me a simple, clear title that explains exactly what the video is about. No buzzwords.
+1. Title: Give me a simple, clear title that explains exactly what the video is about. No buzzwords. Use Markdown Heading format '# Title'
 2. The Bottom Line (Synthesis): In 100 words or less, explain the main point and why it matters. Use simple language.
 3. 3 Quick "Aha!" Moments: Give me 3 bullet points. Each must be under 15 words. Focus on the most useful or surprising things said. Put these below "The Bottom Line."
 4. The Metrics (Numbers Only):
   Signal-to-Noise: (x/5)
   Clickbait Factor: (x/5)
-5. Key Insights: Use ### headers for main topics.
+5. Key Insights: Use headers for main topics.
  Constraint: Skip the ads and random filler conversation.
- Output: Summarise the insights and a timestamp link like this: [HH:MM:SS](https://youtu.be/VIDEO_ID?t=SECONDS).
+ Output: Distill the insights and a timestamp link like this: [HH:MM:SS](https://youtu.be/VIDEO_ID?t=SECONDS).
 Tone: Clear, direct, and brief. Use plain Markdown. No fancy jargon.`;
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TABLE = process.env.DYNAMODB_TABLE;
+
+const ALLOWED_MODELS = {
+  "Gemma 4 26B": "gemma-4-26b-a4b-it",
+  "Gemma 4 31B": "gemma-4-31b-a4b-it",
+  "Gemini 2.5 Flash": "gemini-2.5-flash",
+  "Gemini 3 Flash": "gemini-3-flash-preview",
+  "Gemini 3.1 Flash Lite": "gemini-3.1-flash-lite",
+  "Gemini 2.5 Flash Lite": "gemini-2.5-flash-lite",
+};
+
+const DEFAULT_MODEL = ALLOWED_MODELS["Gemini 3 Flash"];
 
 function extractTitle(markdown) {
   const match = markdown.match(/^#{1,2}\s+(.+)/m);
@@ -26,10 +37,14 @@ function extractTitle(markdown) {
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
 
-async function summarise(url) {
+function isAllowedModel(model) {
+  return Object.values(ALLOWED_MODELS).includes(model);
+}
+
+async function summarise(url, model = DEFAULT_MODEL) {
   const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
   const response = await ai.models.generateContent({
-    model: "gemini-2.5-flash",
+    model,
     contents: [{
       parts: [
         { fileData: { fileUri: url } },
@@ -84,7 +99,18 @@ export async function handler(event) {
           body: JSON.stringify({ error: "url is required" }),
         };
       }
-      return await summarise(body.url);
+      const model = body.model || DEFAULT_MODEL;
+      if (!isAllowedModel(model)) {
+        return {
+          statusCode: 400,
+          headers: JSON_HEADERS,
+          body: JSON.stringify({
+            error: "model is not supported",
+            allowedModels: ALLOWED_MODELS,
+          }),
+        };
+      }
+      return await summarise(body.url, model);
     }
 
     if (method === "GET") {

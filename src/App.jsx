@@ -3,6 +3,15 @@ import ReactMarkdown from 'react-markdown';
 
 const LAMBDA_URL = import.meta.env.VITE_LAMBDA_URL;
 
+const MODEL_OPTIONS = [
+  { label: 'Gemma 4 26B', value: 'gemma-4-26b-a4b-it' },
+  { label: 'Gemma 4 31B', value: 'gemma-4-31b-a4b-it' },
+  { label: 'Gemini 2.5 Flash', value: 'gemini-2.5-flash' },
+  { label: 'Gemini 3 Flash', value: 'gemini-3-flash-preview' },
+  { label: 'Gemini 3.1 Flash Lite', value: 'gemini-3.1-flash-lite' },
+  { label: 'Gemini 2.5 Flash Lite', value: 'gemini-2.5-flash-lite' },
+];
+
 const BrightBlogApp = () => {
   const [url, setUrl] = useState('');
   const [content, setContent] = useState('');
@@ -10,6 +19,7 @@ const BrightBlogApp = () => {
   const [history, setHistory] = useState([]);
   const [page, setPage] = useState('home');
   const [detailItem, setDetailItem] = useState(null);
+  const [model, setModel] = useState('gemini-3-flash-preview');
 
   useEffect(() => {
     if (!LAMBDA_URL) return;
@@ -26,7 +36,7 @@ const BrightBlogApp = () => {
       const res = await fetch(LAMBDA_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url }),
+        body: JSON.stringify({ url, model }),
       });
       if (!res.ok) throw new Error(await res.text());
       const { markdown, title, date } = await res.json();
@@ -143,6 +153,18 @@ const BrightBlogApp = () => {
         <Header />
 
         <div className="input-card">
+          <select
+            value={model}
+            onChange={(e) => setModel(e.target.value)}
+            disabled={loading}
+            aria-label="Model"
+          >
+            {MODEL_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
           <input
             type="text"
             placeholder="Paste YouTube URL..."

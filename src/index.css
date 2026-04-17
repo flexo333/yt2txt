@@ -100,6 +100,22 @@ a:hover { color: var(--link-hover); }
   margin-bottom: 2rem;
 }
 
+.input-card select {
+  padding: 0.65rem 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  font-family: var(--font-body);
+  font-size: 1rem;
+  color: var(--text);
+  outline: none;
+}
+
+.input-card select:focus {
+  border-color: var(--sage);
+  box-shadow: 0 0 0 2px var(--sage-pale);
+}
+
 .input-card input {
   flex: 1;
   min-width: 0;
