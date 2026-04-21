@@ -42,14 +42,14 @@ function isAllowedModel(model) {
   return Object.values(ALLOWED_MODELS).includes(model);
 }
 
-async function summarise(url, model = DEFAULT_MODEL) {
+async function summarise(url, model = DEFAULT_MODEL, prompt = SYSTEM_PROMPT, { persist = true } = {}) {
   const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY, apiVersion: "v1beta" });
   const response = await ai.models.generateContent({
     model,
     contents: [{
       parts: [
         { fileData: { fileUri: url } },
-        { text: SYSTEM_PROMPT },
+        { text: prompt },
       ],
     }],
   });
@@ -58,15 +58,17 @@ async function summarise(url, model = DEFAULT_MODEL) {
   const date = new Date().toISOString().split("T")[0];
   const createdAt = Date.now();
 
-  await ddb.send(new PutCommand({
-    TableName: TABLE,
-    Item: { url, title, markdown, date, createdAt },
-  }));
+  if (persist) {
+    await ddb.send(new PutCommand({
+      TableName: TABLE,
+      Item: { url, title, markdown, date, createdAt },
+    }));
+  }
 
   return {
     statusCode: 200,
     headers: JSON_HEADERS,
-    body: JSON.stringify({ markdown, title, url, date }),
+    body: JSON.stringify({ markdown, title, url, date, model, prompt }),
   };
 }
 
@@ -127,13 +129,34 @@ export async function handler(event) {
           }),
         };
       }
-      return await summarise(body.url, model);
+      return await summarise(body.url, model, body.prompt || SYSTEM_PROMPT);
     }
 
     if (method === "GET") {
-      const shouldListModels = event.queryStringParameters?.models === "1";
-      if (shouldListModels) {
+      const qs = event.queryStringParameters || {};
+      if (qs.models === "1") {
         return await listModels();
+      }
+      if (qs.models === "2") {
+        if (!qs.url || !qs.prompt) {
+          return {
+            statusCode: 400,
+            headers: JSON_HEADERS,
+            body: JSON.stringify({ error: "url and prompt query params are required" }),
+          };
+        }
+        const model = qs.model || DEFAULT_MODEL;
+        if (!isAllowedModel(model)) {
+          return {
+            statusCode: 400,
+            headers: JSON_HEADERS,
+            body: JSON.stringify({
+              error: "model is not supported",
+              allowedModels: ALLOWED_MODELS,
+            }),
+          };
+        }
+        return await summarise(qs.url, model, qs.prompt, { persist: false });
       }
       return await listSummaries();
     }
