@@ -1,3 +1,5 @@
 config:
   aws:region: us-east-1
-  flexo333-yt2txt:domain: yt2txt.willbright.link
+  flexo333-yt2txt:domainName: yt2txt.willbright.link
+  flexo333-yt2txt:bucketName: flexo333-yt2txt
+  flexo333-yt2txt:parentIngressStack: flexo333/flexo333-ingress/prod

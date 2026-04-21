@@ -3,3 +3,4 @@ node_modules/
 backend/summarise/node_modules/
 dist/
 infra/pulumi/__pycache__/
+test-response.json

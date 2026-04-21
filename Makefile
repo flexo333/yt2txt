@@ -5,7 +5,8 @@ ifneq (,$(wildcard .env))
   export
 endif
 
-PULUMI_YES := --yes
+# GitHub Actions sets CI=true → skips confirmation prompts; local runs get confirm
+PULUMI_YES := $(if $(CI),--yes,)
 
 .PHONY: help
 help:

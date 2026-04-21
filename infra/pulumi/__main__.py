@@ -1,8 +1,15 @@
 """
-yt2txt — yt2txt.willbright.link
-S3 + CloudFront SPA, shares ingress stack (Route53 zone + OIDC + IAM roles).
-API Gateway HTTP API proxy keeps GEMINI_API_KEY server-side.
-DynamoDB table persists generated summaries.
+yt2txt — YouTube-to-text summariser SPA
+S3 + CloudFront front-end (via StaticSite component)
+Lambda (Gemini-backed) + DynamoDB for summary persistence
+
+DNS is resolved one of three ways (first match wins):
+  1. yt2txt:parentIngressStack — Pulumi StackReference with a zone_id output
+                                 (flexo333-ingress / shared ingress setup)
+  2. yt2txt:zoneId             — Route53 hosted zone ID passed directly
+                                 (you already have a zone, just give us the ID)
+  3. (neither)                 — a new Route53 zone is created; nameservers are
+                                 exported so you can update your registrar
 """
 
 import os
@@ -26,17 +33,29 @@ def _lambda_archive(handler_dir: str) -> pulumi.AssetArchive:
     return pulumi.AssetArchive(assets)
 
 
-config = pulumi.Config()
-domain = config.get("domain") or "yt2txt.willbright.link"
+config      = pulumi.Config()
+domain_name = config.require("domainName")
+bucket_name = config.get("bucketName") or "flexo333-yt2txt"
 
-ingress = pulumi.StackReference("flexo333/flexo333-ingress/prod")
-zone_id = ingress.get_output("zone_id")
+# ── DNS / Route53 zone ────────────────────────────────────────────────────────
+parent_stack_ref = config.get("parentIngressStack")
+zone_id_direct   = config.get("zoneId")
+
+if parent_stack_ref:
+    ingress = pulumi.StackReference(parent_stack_ref)
+    zone_id = ingress.get_output("zone_id")
+elif zone_id_direct:
+    zone_id = zone_id_direct
+else:
+    _zone   = aws.route53.Zone("yt2txt-zone", name=domain_name)
+    zone_id = _zone.zone_id
+    pulumi.export("nameservers", _zone.name_servers)
 
 site = StaticSite(
     "yt2txt",
-    domain=domain,
+    domain=domain_name,
     zone_id=zone_id,
-    bucket_name="flexo333-yt2txt",
+    bucket_name=bucket_name,
     spa_mode=True,
 )
 
