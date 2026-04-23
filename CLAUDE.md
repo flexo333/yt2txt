@@ -28,9 +28,18 @@ Three layers, each with one source of truth:
 
 **Backend (`backend/summarise/handler.js`)** — one Lambda, one handler, dispatched by HTTP method:
 - `POST` → summarise + persist to DynamoDB
+- `POST { action: "research", person }` → kick off async "person research" job (see `people.js`). Lambda self-invokes with `{ __personJob: true }` payload.
 - `GET` → list last 50 summaries (DynamoDB `Scan`, sorted by `createdAt`)
 - `GET ?models=1` → list available Gemini models (for debugging)
 - `GET ?models=2&url=…&prompt=…` → one-off summary preview without persisting
+- `GET ?people=1` → list tracked people
+- `GET ?person=NAME` → job status + per-video summaries + meta-summary for that person
+
+Person-research modules:
+- `backend/summarise/youtube.js` — YouTube Data API v3 search + metadata (needs `YOUTUBE_API_KEY`).
+- `backend/summarise/people.js` — async job runner. Searches last 6 months, summarises up to 6 videos, sleeps 60s between Gemini calls to respect per-minute quota, then generates a JSON meta-summary (incl. `bestVideoId`).
+- Persisted in two tables: `yt2txt-people` (hash `person`, job state + meta), `yt2txt-people-videos` (hash `person`, sort `videoId`). Per-video summaries are reused across runs — only new videos are summarised.
+- Self-invoke uses `AWS_LAMBDA_FUNCTION_NAME` (injected by the Lambda runtime) — do not hardcode or pass as Pulumi config, that creates a circular dep.
 
 The Lambda uses `@google/genai` with `apiVersion: "v1beta"` and passes the YouTube URL as a `fileData` part — Gemini fetches the transcript itself. The system prompt lives at the top of `handler.js`.
 
@@ -49,6 +58,7 @@ Exported outputs (`bucket`, `distribution_id`, `api_url`, `lambda_function_name`
 - **Lambda arch**: `backend/summarise/node_modules/` must be built on `linux/amd64`. Use `make build-lambda` (the `node-lambda` compose service pins the platform). Don't `npm install` there from host macOS.
 - **CORS**: `allow_origins` in the Function URL is hardcoded to `https://yt2txt.willbright.link` and `http://localhost:5173`. Any other origin (preview deploys, alternate dev ports) needs to be added in `__main__.py` and re-applied.
 - **`GEMINI_API_KEY`** is baked into the Lambda's environment variables by Pulumi at deploy time, read from `os.environ` — it must be present in the shell running `make infra-up` (and is passed via `.env` → `docker-compose.yml` → the `pulumi` service).
+- **`YOUTUBE_API_KEY`** follows the same pattern — required for the "People" research flow. Needs `YOUTUBE_API_KEY` in `.env` locally and as a GitHub Actions secret for CI.
 - **Allowed-model list** is duplicated between frontend (`MODEL_OPTIONS` in `App.jsx`) and backend (`ALLOWED_MODELS` in `handler.js`). When adding/removing a model, edit both.
 
 ## CI

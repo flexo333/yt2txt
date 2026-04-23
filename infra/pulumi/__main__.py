@@ -36,6 +36,7 @@ def _lambda_archive(handler_dir: str) -> pulumi.AssetArchive:
 config      = pulumi.Config()
 domain_name = config.require("domainName")
 bucket_name = config.get("bucketName") or "flexo333-yt2txt"
+shared_secret = config.get_secret("yt2txtSharedSecret")
 
 # ── DNS / Route53 zone ────────────────────────────────────────────────────────
 parent_stack_ref = config.get("parentIngressStack")
@@ -59,13 +60,33 @@ site = StaticSite(
     spa_mode=True,
 )
 
-# ── DynamoDB table ────────────────────────────────────────────────────────────
+# ── DynamoDB tables ───────────────────────────────────────────────────────────
 table = aws.dynamodb.Table(
     "summaries",
     name="yt2txt-summaries",
     billing_mode="PAY_PER_REQUEST",
     hash_key="url",
     attributes=[aws.dynamodb.TableAttributeArgs(name="url", type="S")],
+)
+
+people_table = aws.dynamodb.Table(
+    "people",
+    name="yt2txt-people",
+    billing_mode="PAY_PER_REQUEST",
+    hash_key="person",
+    attributes=[aws.dynamodb.TableAttributeArgs(name="person", type="S")],
+)
+
+people_videos_table = aws.dynamodb.Table(
+    "people-videos",
+    name="yt2txt-people-videos",
+    billing_mode="PAY_PER_REQUEST",
+    hash_key="person",
+    range_key="videoId",
+    attributes=[
+        aws.dynamodb.TableAttributeArgs(name="person", type="S"),
+        aws.dynamodb.TableAttributeArgs(name="videoId", type="S"),
+    ],
 )
 
 # ── IAM role for Lambda ───────────────────────────────────────────────────────
@@ -90,14 +111,22 @@ aws.iam.RolePolicyAttachment(
 aws.iam.RolePolicy(
     "summarise-ddb-policy",
     role=lambda_role.id,
-    policy=table.arn.apply(lambda arn: json.dumps({
-        "Version": "2012-10-17",
-        "Statement": [{
-            "Effect": "Allow",
-            "Action": ["dynamodb:PutItem", "dynamodb:Scan"],
-            "Resource": arn,
-        }],
-    })),
+    policy=pulumi.Output.all(table.arn, people_table.arn, people_videos_table.arn).apply(
+        lambda arns: json.dumps({
+            "Version": "2012-10-17",
+            "Statement": [{
+                "Effect": "Allow",
+                "Action": [
+                    "dynamodb:PutItem",
+                    "dynamodb:GetItem",
+                    "dynamodb:UpdateItem",
+                    "dynamodb:Scan",
+                    "dynamodb:Query",
+                ],
+                "Resource": arns,
+            }],
+        })
+    ),
 )
 
 # ── Lambda function ───────────────────────────────────────────────────────────
@@ -109,12 +138,29 @@ summarise_fn = aws.lambda_.Function(
     handler="handler.handler",
     role=lambda_role.arn,
     code=summarise_zip,
-    timeout=360,
+    timeout=900,
     memory_size=256,
     environment=aws.lambda_.FunctionEnvironmentArgs(variables={
         "DYNAMODB_TABLE": table.name,
+        "PEOPLE_TABLE": people_table.name,
+        "PEOPLE_VIDEOS_TABLE": people_videos_table.name,
         "GEMINI_API_KEY": os.environ.get("GEMINI_API_KEY", ""),
+        "YOUTUBE_API_KEY": os.environ.get("YOUTUBE_API_KEY", ""),
+        "SHARED_SECRET": shared_secret if shared_secret is not None else "",
     }),
+)
+
+aws.iam.RolePolicy(
+    "summarise-self-invoke-policy",
+    role=lambda_role.id,
+    policy=summarise_fn.arn.apply(lambda arn: json.dumps({
+        "Version": "2012-10-17",
+        "Statement": [{
+            "Effect": "Allow",
+            "Action": ["lambda:InvokeFunction"],
+            "Resource": arn,
+        }],
+    })),
 )
 
 # ── Lambda Function URL (no APIGW 29 s timeout) ───────────────────────────────
@@ -135,7 +181,7 @@ fn_url = aws.lambda_.FunctionUrl(
     cors=aws.lambda_.FunctionUrlCorsArgs(
         allow_origins=["https://yt2txt.willbright.link", "http://localhost:5173"],
         allow_methods=["GET", "POST"],
-        allow_headers=["content-type"],
+        allow_headers=["content-type", "x-yt2txt-key"],
         max_age=300,
     ),
     opts=pulumi.ResourceOptions(depends_on=[url_permission]),
@@ -149,3 +195,5 @@ pulumi.export("aws_region", pulumi.Config("aws").require("region"))
 pulumi.export("api_url", fn_url.function_url)
 pulumi.export("lambda_function_name", summarise_fn.name)
 pulumi.export("dynamodb_table", table.name)
+if shared_secret is not None:
+    pulumi.export("yt2txt_shared_secret", shared_secret)

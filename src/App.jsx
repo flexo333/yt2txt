@@ -1,7 +1,26 @@
 import React, { useState, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
+import People from './pages/People.jsx';
 
 const LAMBDA_URL = import.meta.env.VITE_LAMBDA_URL;
+const YT2TXT_KEY = import.meta.env.VITE_YT2TXT_KEY || '';
+
+const authHeaders = () => (YT2TXT_KEY ? { 'x-yt2txt-key': YT2TXT_KEY } : {});
+
+const MARKDOWN_URL_TRANSFORM = (url) => {
+  try {
+    const u = new URL(url, window.location.href);
+    return ['http:', 'https:', 'mailto:'].includes(u.protocol) ? url : '';
+  } catch {
+    return '';
+  }
+};
+
+const MARKDOWN_COMPONENTS = {
+  a: ({ node, ...props }) => (
+    <a {...props} target="_blank" rel="noopener noreferrer nofollow ugc" />
+  ),
+};
 
 const MODEL_OPTIONS = [
   { label: 'Gemma 4 26B', value: 'models/gemma-4-26b-a4b-it' },
@@ -23,7 +42,7 @@ const BrightBlogApp = () => {
 
   useEffect(() => {
     if (!LAMBDA_URL) return;
-    fetch(LAMBDA_URL)
+    fetch(LAMBDA_URL, { headers: authHeaders() })
       .then(r => r.json())
       .then(({ summaries }) => setHistory(summaries || []))
       .catch(console.error);
@@ -35,7 +54,7 @@ const BrightBlogApp = () => {
     try {
       const res = await fetch(LAMBDA_URL, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({ url, model }),
       });
       if (!res.ok) throw new Error(await res.text());
@@ -88,6 +107,12 @@ const BrightBlogApp = () => {
         >
           History {history.length > 0 && <span className="nav-badge">{history.length}</span>}
         </button>
+        <button
+          className={`nav-link ${page === 'people' ? 'nav-link--active' : ''}`}
+          onClick={() => { setPage('people'); setDetailItem(null); }}
+        >
+          People
+        </button>
       </nav>
     </header>
   );
@@ -106,8 +131,19 @@ const BrightBlogApp = () => {
             </button>
           </div>
           <article className="prose">
-            <ReactMarkdown>{detailItem.summary}</ReactMarkdown>
+            <ReactMarkdown urlTransform={MARKDOWN_URL_TRANSFORM} components={MARKDOWN_COMPONENTS}>{detailItem.summary}</ReactMarkdown>
           </article>
+        </div>
+      </div>
+    );
+  }
+
+  if (page === 'people') {
+    return (
+      <div className="page-shell">
+        <div className="container">
+          <Header />
+          <People />
         </div>
       </div>
     );
@@ -189,7 +225,7 @@ const BrightBlogApp = () => {
               </button>
             </div>
             <article className="prose">
-              <ReactMarkdown>{content}</ReactMarkdown>
+              <ReactMarkdown urlTransform={MARKDOWN_URL_TRANSFORM} components={MARKDOWN_COMPONENTS}>{content}</ReactMarkdown>
             </article>
           </>
         ) : (

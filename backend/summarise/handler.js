@@ -1,6 +1,7 @@
 import { GoogleGenAI } from "@google/genai";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, PutCommand, ScanCommand } from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, PutCommand, ScanCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
+import { researchPerson, runPersonJob, getPerson, listPeople } from "./people.js";
 
 const SYSTEM_PROMPT = `Role: You are a no-nonsense Content Analyst. Your goal is to give me the "meat" of the video in plain English. Cut all fluff, repetitive points, and AI-sounding filler.
 
@@ -19,6 +20,9 @@ Instructions:
 Tone: Clear, direct, and brief. Use plain Markdown. No fancy jargon.`;
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TABLE = process.env.DYNAMODB_TABLE;
+const SHARED_SECRET = process.env.SHARED_SECRET || "";
+
+const YOUTUBE_URL_RE = /^https:\/\/(www\.)?(youtube\.com\/watch\?v=[\w-]{11}|youtu\.be\/[\w-]{11})(\S*)?$/;
 
 const ALLOWED_MODELS = {
   "Gemma 4 26B": "models/gemma-4-26b-a4b-it",
@@ -42,14 +46,33 @@ function isAllowedModel(model) {
   return Object.values(ALLOWED_MODELS).includes(model);
 }
 
-async function summarise(url, model = DEFAULT_MODEL, prompt = SYSTEM_PROMPT, { persist = true } = {}) {
+function headerValue(event, name) {
+  const headers = event.headers || {};
+  const lower = name.toLowerCase();
+  for (const k of Object.keys(headers)) {
+    if (k.toLowerCase() === lower) return headers[k];
+  }
+  return undefined;
+}
+
+async function summarise(url, model = DEFAULT_MODEL) {
+  const existing = await ddb.send(new GetCommand({ TableName: TABLE, Key: { url } }));
+  if (existing.Item) {
+    const { markdown, title, date } = existing.Item;
+    return {
+      statusCode: 200,
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ markdown, title, url, date, model, cached: true }),
+    };
+  }
+
   const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY, apiVersion: "v1beta" });
   const response = await ai.models.generateContent({
     model,
     contents: [{
       parts: [
         { fileData: { fileUri: url } },
-        { text: prompt },
+        { text: SYSTEM_PROMPT },
       ],
     }],
   });
@@ -58,17 +81,36 @@ async function summarise(url, model = DEFAULT_MODEL, prompt = SYSTEM_PROMPT, { p
   const date = new Date().toISOString().split("T")[0];
   const createdAt = Date.now();
 
-  if (persist) {
+  try {
     await ddb.send(new PutCommand({
       TableName: TABLE,
       Item: { url, title, markdown, date, createdAt },
+      ConditionExpression: "attribute_not_exists(#u)",
+      ExpressionAttributeNames: { "#u": "url" },
     }));
+  } catch (err) {
+    if (err.name !== "ConditionalCheckFailedException") throw err;
+    const again = await ddb.send(new GetCommand({ TableName: TABLE, Key: { url } }));
+    if (again.Item) {
+      return {
+        statusCode: 200,
+        headers: JSON_HEADERS,
+        body: JSON.stringify({
+          markdown: again.Item.markdown,
+          title: again.Item.title,
+          url,
+          date: again.Item.date,
+          model,
+          cached: true,
+        }),
+      };
+    }
   }
 
   return {
     statusCode: 200,
     headers: JSON_HEADERS,
-    body: JSON.stringify({ markdown, title, url, date, model, prompt }),
+    body: JSON.stringify({ markdown, title, url, date, model }),
   };
 }
 
@@ -106,16 +148,50 @@ async function listSummaries() {
 }
 
 export async function handler(event) {
+  if (event && event.__personJob) {
+    await runPersonJob(event);
+    return { statusCode: 200, body: "ok" };
+  }
+
   const method = event.requestContext?.http?.method || event.httpMethod || "GET";
+
+  if (SHARED_SECRET) {
+    const provided = headerValue(event, "x-yt2txt-key");
+    if (provided !== SHARED_SECRET) {
+      return {
+        statusCode: 401,
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ error: "unauthorized" }),
+      };
+    }
+  }
 
   try {
     if (method === "POST") {
-      const body = JSON.parse(event.body || "{}");
-      if (!body.url) {
+      const raw = event.body || "{}";
+      if (raw.length > 4096) {
+        return {
+          statusCode: 413,
+          headers: JSON_HEADERS,
+          body: JSON.stringify({ error: "payload too large" }),
+        };
+      }
+      const body = JSON.parse(raw);
+      if (body.action === "research") {
+        if (!body.person || typeof body.person !== "string") {
+          return { statusCode: 400, headers: JSON_HEADERS, body: JSON.stringify({ error: "person required" }) };
+        }
+        const model = body.model || DEFAULT_MODEL;
+        if (!isAllowedModel(model)) {
+          return { statusCode: 400, headers: JSON_HEADERS, body: JSON.stringify({ error: "model not supported" }) };
+        }
+        return await researchPerson(body.person, model);
+      }
+      if (!body.url || typeof body.url !== "string" || !YOUTUBE_URL_RE.test(body.url)) {
         return {
           statusCode: 400,
           headers: JSON_HEADERS,
-          body: JSON.stringify({ error: "url is required" }),
+          body: JSON.stringify({ error: "valid youtube url is required" }),
         };
       }
       const model = body.model || DEFAULT_MODEL;
@@ -129,7 +205,7 @@ export async function handler(event) {
           }),
         };
       }
-      return await summarise(body.url, model, body.prompt || SYSTEM_PROMPT);
+      return await summarise(body.url, model);
     }
 
     if (method === "GET") {
@@ -137,26 +213,11 @@ export async function handler(event) {
       if (qs.models === "1") {
         return await listModels();
       }
-      if (qs.models === "2") {
-        if (!qs.url || !qs.prompt) {
-          return {
-            statusCode: 400,
-            headers: JSON_HEADERS,
-            body: JSON.stringify({ error: "url and prompt query params are required" }),
-          };
-        }
-        const model = qs.model || DEFAULT_MODEL;
-        if (!isAllowedModel(model)) {
-          return {
-            statusCode: 400,
-            headers: JSON_HEADERS,
-            body: JSON.stringify({
-              error: "model is not supported",
-              allowedModels: ALLOWED_MODELS,
-            }),
-          };
-        }
-        return await summarise(qs.url, model, qs.prompt, { persist: false });
+      if (qs.people === "1") {
+        return await listPeople();
+      }
+      if (qs.person) {
+        return await getPerson(qs.person);
       }
       return await listSummaries();
     }
@@ -167,7 +228,7 @@ export async function handler(event) {
     return {
       statusCode: 500,
       headers: JSON_HEADERS,
-      body: JSON.stringify({ error: err.message }),
+      body: JSON.stringify({ error: "internal error" }),
     };
   }
 }
