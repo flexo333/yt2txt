@@ -37,6 +37,8 @@ jobs:
           echo "CF_DISTRIBUTION_ID=$(pulumi stack output distribution_id -s flexo333/flexo333-yt2txt/prod)" >> $GITHUB_OUTPUT
           echo "AWS_REGION=$(pulumi stack output aws_region -s flexo333/flexo333-yt2txt/prod)" >> $GITHUB_OUTPUT
           echo "LAMBDA_URL=$(pulumi stack output api_url -s flexo333/flexo333-yt2txt/prod)" >> $GITHUB_OUTPUT
+          echo "::add-mask::$(pulumi stack output --show-secrets yt2txt_shared_secret -s flexo333/flexo333-yt2txt/prod 2>/dev/null)"
+          echo "YT2TXT_KEY=$(pulumi stack output --show-secrets yt2txt_shared_secret -s flexo333/flexo333-yt2txt/prod 2>/dev/null)" >> $GITHUB_OUTPUT
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -49,6 +51,7 @@ jobs:
       - name: Build
         env:
           VITE_LAMBDA_URL: ${{ steps.config.outputs.LAMBDA_URL }}
+          VITE_YT2TXT_KEY: ${{ steps.config.outputs.YT2TXT_KEY }}
         run: npm run build
 
       - name: Sync to S3

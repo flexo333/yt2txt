@@ -3,3 +3,5 @@ config:
   flexo333-yt2txt:domainName: yt2txt.willbright.link
   flexo333-yt2txt:bucketName: flexo333-yt2txt
   flexo333-yt2txt:parentIngressStack: flexo333/flexo333-ingress/prod
+  flexo333-yt2txt:yt2txtSharedSecret:
+    secure: AAABAOSrfmAevIWDw0fGLnx8lMGovR//oxEwy2pcJc9T9hzHcQLFWnO3vQz+RcDvDdfXZ8n15G2hOWghSKsvPw04hKSxV4qR7Kg6TiXjCQH1Sq6xoUAR3rv244s3AHxm
