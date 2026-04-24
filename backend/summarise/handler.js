@@ -1,7 +1,7 @@
 import { GoogleGenAI } from "@google/genai";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, PutCommand, ScanCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
-import { researchPerson, runPersonJob, getPerson, listPeople } from "./people.js";
+import { researchPerson, runPersonJob, getPerson, listPeople, pollPendingBatches } from "./people.js";
 
 const SYSTEM_PROMPT = `Role: You are a no-nonsense Content Analyst. Your goal is to give me the "meat" of the video in plain English. Cut all fluff, repetitive points, and AI-sounding filler.
 
@@ -151,6 +151,11 @@ export async function handler(event) {
   if (event && event.__personJob) {
     await runPersonJob(event);
     return { statusCode: 200, body: "ok" };
+  }
+
+  if (event && event.__pollBatches) {
+    const result = await pollPendingBatches();
+    return { statusCode: 200, body: JSON.stringify(result) };
   }
 
   const method = event.requestContext?.http?.method || event.httpMethod || "GET";

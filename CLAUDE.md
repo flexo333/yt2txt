@@ -37,9 +37,11 @@ Three layers, each with one source of truth:
 
 Person-research modules:
 - `backend/summarise/youtube.js` — YouTube Data API v3 search + metadata (needs `YOUTUBE_API_KEY`).
-- `backend/summarise/people.js` — async job runner. Searches last 6 months, summarises up to 6 videos, sleeps 60s between Gemini calls to respect per-minute quota, then generates a JSON meta-summary (incl. `bestVideoId`).
-- Persisted in two tables: `yt2txt-people` (hash `person`, job state + meta), `yt2txt-people-videos` (hash `person`, sort `videoId`). Per-video summaries are reused across runs — only new videos are summarised.
-- Self-invoke uses `AWS_LAMBDA_FUNCTION_NAME` (injected by the Lambda runtime) — do not hardcode or pass as Pulumi config, that creates a circular dep.
+- `backend/summarise/people.js` — async job runner using the **Gemini Batch API**. Searches last 6 months, submits up to 8 per-video summarisation requests as a single inline batch (separate / higher quota than sync, 50% cheaper), returns immediately. Completion is handled by `pollPendingBatches()`, which is invoked on a schedule.
+- Person status progresses: `queued → running (searching) → batch_pending → finalising → done | error`. Per-video rows carry `status: batch_pending | done | error`.
+- Persisted in two tables: `yt2txt-people` (hash `person`, job state + `batchName` + `batchKeys` + meta), `yt2txt-people-videos` (hash `person`, sort `videoId`). Per-video summaries are reused across runs — only new videos are summarised.
+- Self-invoke (via `InvokeCommand`) uses `AWS_LAMBDA_FUNCTION_NAME` (injected by the Lambda runtime) — do not hardcode or pass as Pulumi config, that creates a circular dep.
+- **Batch poller**: an EventBridge rule (`summarise-poll-rule`, every 3 min) invokes the Lambda with `{__pollBatches: true}`. The handler scans `yt2txt-people` for `batch_pending`, calls `ai.batches.get`, writes results to per-video rows, then runs a single sync meta-summary call and marks the person `done`. Terminal batch states: `SUCCEEDED | PARTIALLY_SUCCEEDED | FAILED | CANCELLED | EXPIRED`.
 
 The Lambda uses `@google/genai` with `apiVersion: "v1beta"` and passes the YouTube URL as a `fileData` part — Gemini fetches the transcript itself. The system prompt lives at the top of `handler.js`.
 
@@ -60,6 +62,8 @@ Exported outputs (`bucket`, `distribution_id`, `api_url`, `lambda_function_name`
 - **`GEMINI_API_KEY`** is baked into the Lambda's environment variables by Pulumi at deploy time, read from `os.environ` — it must be present in the shell running `make infra-up` (and is passed via `.env` → `docker-compose.yml` → the `pulumi` service).
 - **`YOUTUBE_API_KEY`** follows the same pattern — required for the "People" research flow. Needs `YOUTUBE_API_KEY` in `.env` locally and as a GitHub Actions secret for CI.
 - **Allowed-model list** is duplicated between frontend (`MODEL_OPTIONS` in `App.jsx`) and backend (`ALLOWED_MODELS` in `handler.js`). When adding/removing a model, edit both.
+- **Batch SLO is 24h**: the Gemini Batch API guarantees completion within 24h but is usually much faster. Person research is no longer "wait ~5 min and it's done" — the UI should reflect `batch_pending` as a legitimate state, not stuck. The poller runs every 3 min so post-completion lag is small.
+- **Stale `running` rows from pre-batch runs** will block new `researchPerson` calls (the alreadyRunning guard checks `running | queued | batch_pending`). Manually update or delete the DDB row if a person is stuck from before this refactor.
 
 ## CI
 

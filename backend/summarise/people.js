@@ -11,8 +11,15 @@ const PEOPLE_TABLE = process.env.PEOPLE_TABLE;
 const PEOPLE_VIDEOS_TABLE = process.env.PEOPLE_VIDEOS_TABLE;
 const SELF_FUNCTION_NAME = process.env.AWS_LAMBDA_FUNCTION_NAME;
 
-const VIDEO_GAP_MS = 60_000;
-const MAX_VIDEOS = 6;
+const MAX_VIDEOS = 8;
+
+const TERMINAL_STATES = new Set([
+  "JOB_STATE_SUCCEEDED",
+  "JOB_STATE_FAILED",
+  "JOB_STATE_CANCELLED",
+  "JOB_STATE_EXPIRED",
+  "JOB_STATE_PARTIALLY_SUCCEEDED",
+]);
 
 const VIDEO_PROMPT = `Role: You are a no-nonsense Content Analyst extracting what a specific named person says in a YouTube video.
 
@@ -51,8 +58,6 @@ export function normalisePerson(name) {
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
 
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-
 async function loadPerson(person) {
   const res = await ddb.send(new GetCommand({ TableName: PEOPLE_TABLE, Key: { person } }));
   return res.Item || null;
@@ -75,8 +80,8 @@ export async function researchPerson(displayName, model) {
   }
 
   const existing = await loadPerson(person);
-  if (existing && existing.status === "running") {
-    return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ person, status: "running", alreadyRunning: true }) };
+  if (existing && (existing.status === "running" || existing.status === "batch_pending" || existing.status === "queued")) {
+    return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ person, status: existing.status, alreadyRunning: true }) };
   }
 
   await ddb.send(new PutCommand({
@@ -127,17 +132,84 @@ async function updatePerson(person, attrs) {
   }));
 }
 
-async function summariseVideo(ai, model, url, displayName) {
-  const response = await ai.models.generateContent({
-    model,
+function buildInlinedRequest(url, displayName) {
+  return {
     contents: [{
       parts: [
         { fileData: { fileUri: url } },
         { text: `Speaker to focus on: ${displayName}\n\n${VIDEO_PROMPT}` },
       ],
     }],
-  });
-  return response.text;
+  };
+}
+
+export async function runPersonJob({ person, displayName, model }) {
+  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY, apiVersion: "v1beta" });
+  const chosenModel = model || "models/gemini-3-flash-preview";
+
+  try {
+    await updatePerson(person, {
+      status: "running",
+      progress: { current: 0, total: 0, phase: "searching" },
+      startedAt: Date.now(),
+    });
+
+    const candidates = await searchVideosByPerson(displayName, { max: MAX_VIDEOS, months: 6 });
+    const existing = await loadPersonVideos(person);
+    const existingIds = new Set(existing.map(v => v.videoId));
+    const fresh = candidates.filter(c => !existingIds.has(c.videoId));
+
+    if (fresh.length === 0) {
+      await finalisePerson(ai, chosenModel, person, displayName);
+      return;
+    }
+
+    const metaMap = await getVideoMetadata(fresh.map(c => c.videoId));
+
+    for (const v of fresh) {
+      const m = metaMap[v.videoId] || {};
+      await ddb.send(new PutCommand({
+        TableName: PEOPLE_VIDEOS_TABLE,
+        Item: {
+          person,
+          videoId: v.videoId,
+          url: v.url,
+          title: v.title,
+          channelTitle: v.channelTitle,
+          publishedAt: v.publishedAt,
+          durationSeconds: m.durationSeconds || 0,
+          viewCount: m.viewCount || 0,
+          markdown: "",
+          model: chosenModel,
+          status: "batch_pending",
+          queuedAt: Date.now(),
+        },
+      }));
+    }
+
+    const inlinedRequests = fresh.map(v => buildInlinedRequest(v.url, displayName));
+    const batchKeys = fresh.map(v => v.videoId);
+
+    const batch = await ai.batches.create({
+      model: chosenModel,
+      src: inlinedRequests,
+      config: { displayName: `yt2txt-${person}-${Date.now()}` },
+    });
+
+    await updatePerson(person, {
+      status: "batch_pending",
+      progress: { current: 0, total: fresh.length, phase: "batch_pending" },
+      batchName: batch.name,
+      batchKeys,
+      batchSubmittedAt: Date.now(),
+    });
+  } catch (err) {
+    console.error("person job submit failed", err);
+    await updatePerson(person, {
+      status: "error",
+      errorMessage: String(err?.message || err),
+    });
+  }
 }
 
 async function generateMeta(ai, model, displayName, videos) {
@@ -161,84 +233,128 @@ async function generateMeta(ai, model, displayName, videos) {
   return JSON.parse(jsonMatch[0]);
 }
 
-export async function runPersonJob({ person, displayName, model }) {
-  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY, apiVersion: "v1beta" });
+async function finalisePerson(ai, model, person, displayName) {
+  await updatePerson(person, {
+    status: "finalising",
+    progress: { phase: "meta" },
+  });
+
+  const allVideos = (await loadPersonVideos(person)).filter(v => v.markdown);
+  let metaResult = { markdown: "", bestVideoId: null, bestVideoReason: "" };
+  if (allVideos.length > 0) {
+    metaResult = await generateMeta(ai, model, displayName, allVideos);
+  }
+
+  await updatePerson(person, {
+    status: "done",
+    meta: metaResult,
+    lastRunAt: Date.now(),
+    progress: { current: allVideos.length, total: allVideos.length, phase: "done" },
+  });
+}
+
+async function handleBatchResult(ai, personRow, batch) {
+  const { person, displayName, model, batchKeys = [] } = personRow;
   const chosenModel = model || "models/gemini-3-flash-preview";
 
-  try {
-    await updatePerson(person, {
-      status: "running",
-      progress: { current: 0, total: 0, phase: "searching" },
-      startedAt: Date.now(),
-    });
+  const responses = batch?.dest?.inlinedResponses || [];
+  let successes = 0;
+  let failures = 0;
 
-    const candidates = await searchVideosByPerson(displayName, { max: MAX_VIDEOS, months: 6 });
-    const existing = await loadPersonVideos(person);
-    const existingIds = new Set(existing.map(v => v.videoId));
-    const fresh = candidates.filter(c => !existingIds.has(c.videoId));
-    const metaMap = await getVideoMetadata(fresh.map(c => c.videoId));
-
-    await updatePerson(person, {
-      progress: { current: 0, total: fresh.length, phase: "summarising" },
-    });
-
-    for (let i = 0; i < fresh.length; i++) {
-      const v = fresh[i];
-      await updatePerson(person, {
-        progress: {
-          current: i,
-          total: fresh.length,
-          phase: "summarising",
-          currentTitle: v.title,
-        },
-      });
-
-      if (i > 0) await sleep(VIDEO_GAP_MS);
-
-      const markdown = await summariseVideo(ai, chosenModel, v.url, displayName);
-      const meta = metaMap[v.videoId] || {};
-
-      await ddb.send(new PutCommand({
+  for (let i = 0; i < batchKeys.length; i++) {
+    const videoId = batchKeys[i];
+    const entry = responses[i];
+    if (!entry) {
+      failures++;
+      continue;
+    }
+    if (entry.error) {
+      failures++;
+      await ddb.send(new UpdateCommand({
         TableName: PEOPLE_VIDEOS_TABLE,
-        Item: {
-          person,
-          videoId: v.videoId,
-          url: v.url,
-          title: v.title,
-          channelTitle: v.channelTitle,
-          publishedAt: v.publishedAt,
-          durationSeconds: meta.durationSeconds || 0,
-          viewCount: meta.viewCount || 0,
-          markdown,
-          model: chosenModel,
-          summarisedAt: Date.now(),
+        Key: { person, videoId },
+        UpdateExpression: "SET #s = :s, errorMessage = :e",
+        ExpressionAttributeNames: { "#s": "status" },
+        ExpressionAttributeValues: {
+          ":s": "error",
+          ":e": String(entry.error?.message || entry.error?.code || "batch error"),
         },
       }));
+      continue;
     }
-
-    await updatePerson(person, {
-      progress: { current: fresh.length, total: fresh.length, phase: "meta" },
-    });
-
-    const allVideos = await loadPersonVideos(person);
-    let metaResult = { markdown: "", bestVideoId: null, bestVideoReason: "" };
-    if (allVideos.length > 0) {
-      metaResult = await generateMeta(ai, chosenModel, displayName, allVideos);
+    const markdown = entry.response?.text
+      || entry.response?.candidates?.[0]?.content?.parts?.map(p => p.text).filter(Boolean).join("\n")
+      || "";
+    if (!markdown) {
+      failures++;
+      await ddb.send(new UpdateCommand({
+        TableName: PEOPLE_VIDEOS_TABLE,
+        Key: { person, videoId },
+        UpdateExpression: "SET #s = :s, errorMessage = :e",
+        ExpressionAttributeNames: { "#s": "status" },
+        ExpressionAttributeValues: { ":s": "error", ":e": "empty response" },
+      }));
+      continue;
     }
-
-    await updatePerson(person, {
-      status: "done",
-      meta: metaResult,
-      lastRunAt: Date.now(),
-      progress: { current: allVideos.length, total: allVideos.length, phase: "done" },
-    });
-  } catch (err) {
-    console.error("person job failed", err);
-    await updatePerson(person, {
-      status: "error",
-      errorMessage: String(err?.message || err),
-    });
+    successes++;
+    await ddb.send(new UpdateCommand({
+      TableName: PEOPLE_VIDEOS_TABLE,
+      Key: { person, videoId },
+      UpdateExpression: "SET markdown = :m, #s = :s, summarisedAt = :t",
+      ExpressionAttributeNames: { "#s": "status" },
+      ExpressionAttributeValues: {
+        ":m": markdown,
+        ":s": "done",
+        ":t": Date.now(),
+      },
+    }));
   }
+
+  await updatePerson(person, {
+    progress: { current: successes, total: batchKeys.length, phase: "meta", failures },
+  });
+
+  await finalisePerson(ai, chosenModel, person, displayName);
+}
+
+export async function pollPendingBatches() {
+  const res = await ddb.send(new ScanCommand({
+    TableName: PEOPLE_TABLE,
+    FilterExpression: "#s = :s",
+    ExpressionAttributeNames: { "#s": "status" },
+    ExpressionAttributeValues: { ":s": "batch_pending" },
+  }));
+  const rows = res.Items || [];
+  if (rows.length === 0) return { polled: 0, completed: 0 };
+
+  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY, apiVersion: "v1beta" });
+  let completed = 0;
+
+  for (const row of rows) {
+    if (!row.batchName) continue;
+    try {
+      const batch = await ai.batches.get({ name: row.batchName });
+      const state = batch?.state;
+      if (!state || !TERMINAL_STATES.has(state)) {
+        await updatePerson(row.person, { lastPolledAt: Date.now() });
+        continue;
+      }
+      if (state === "JOB_STATE_SUCCEEDED" || state === "JOB_STATE_PARTIALLY_SUCCEEDED") {
+        await handleBatchResult(ai, row, batch);
+        completed++;
+      } else {
+        await updatePerson(row.person, {
+          status: "error",
+          errorMessage: `batch ${state}: ${batch?.error?.message || "no detail"}`,
+        });
+      }
+    } catch (err) {
+      console.error("poll error for", row.person, err);
+      await updatePerson(row.person, { lastPolledAt: Date.now(), lastPollError: String(err?.message || err) });
+    }
+  }
+
+  return { polled: rows.length, completed };
 }
 
 export async function getPerson(displayName) {

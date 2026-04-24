@@ -163,6 +163,32 @@ aws.iam.RolePolicy(
     })),
 )
 
+# ── Batch-poll schedule ───────────────────────────────────────────────────────
+# Person research submits a Gemini Batch job and returns; this rule wakes the
+# Lambda every 3 min to poll for completion and write results. See people.js
+# `pollPendingBatches`. Short cadence is cheap — scan only filters by
+# status=batch_pending, and the batch itself is free to poll.
+poll_rule = aws.cloudwatch.EventRule(
+    "summarise-poll-rule",
+    schedule_expression="rate(3 minutes)",
+    description="Poll Gemini batch jobs for yt2txt person research",
+)
+
+aws.cloudwatch.EventTarget(
+    "summarise-poll-target",
+    rule=poll_rule.name,
+    arn=summarise_fn.arn,
+    input=json.dumps({"__pollBatches": True}),
+)
+
+aws.lambda_.Permission(
+    "summarise-poll-permission",
+    action="lambda:InvokeFunction",
+    function=summarise_fn.name,
+    principal="events.amazonaws.com",
+    source_arn=poll_rule.arn,
+)
+
 # ── Lambda Function URL (no APIGW 29 s timeout) ───────────────────────────────
 # Permission must exist before the URL is created; otherwise AWS caches a
 # "no public access" authz state on the URL that survives later policy edits.
