@@ -92,7 +92,10 @@ const BrightBlogApp = () => {
 
   const Header = () => (
     <header className="site-header">
-      <h1>yt2txt</h1>
+      <div className="site-brand">
+        <img src="/yt2txt.svg" alt="" className="site-logo" width="40" height="40" />
+        <h1>yt2txt</h1>
+      </div>
       <p>Converting visual noise into structured wisdom.</p>
       <nav className="site-nav">
         <button
