@@ -73,14 +73,15 @@ async function loadPersonVideos(person) {
   return res.Items || [];
 }
 
-export async function researchPerson(displayName, model) {
+export async function researchPerson(displayName, model, { force = false } = {}) {
   const person = normalisePerson(displayName);
   if (!person) {
     return { statusCode: 400, headers: JSON_HEADERS, body: JSON.stringify({ error: "person name required" }) };
   }
 
   const existing = await loadPerson(person);
-  if (existing && (existing.status === "running" || existing.status === "batch_pending" || existing.status === "queued")) {
+  const busy = existing && (existing.status === "running" || existing.status === "batch_pending" || existing.status === "queued");
+  if (busy && !force) {
     return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ person, status: existing.status, alreadyRunning: true }) };
   }
 
@@ -156,8 +157,21 @@ export async function runPersonJob({ person, displayName, model }) {
 
     const candidates = await searchVideosByPerson(displayName, { max: MAX_VIDEOS, months: 6 });
     const existing = await loadPersonVideos(person);
-    const existingIds = new Set(existing.map(v => v.videoId));
-    const fresh = candidates.filter(c => !existingIds.has(c.videoId));
+    const doneIds = new Set(existing.filter(v => v.status === "done" && v.markdown).map(v => v.videoId));
+
+    const fromSearch = candidates.filter(c => !doneIds.has(c.videoId));
+    const searchIds = new Set(fromSearch.map(c => c.videoId));
+    const retryStale = existing
+      .filter(v => !doneIds.has(v.videoId) && !searchIds.has(v.videoId) && v.url)
+      .map(v => ({
+        videoId: v.videoId,
+        url: v.url,
+        title: v.title || "",
+        channelTitle: v.channelTitle || "",
+        publishedAt: v.publishedAt || "",
+      }));
+
+    const fresh = [...fromSearch, ...retryStale].slice(0, MAX_VIDEOS);
 
     if (fresh.length === 0) {
       await finalisePerson(ai, chosenModel, person, displayName);
@@ -190,11 +204,7 @@ export async function runPersonJob({ person, displayName, model }) {
     const inlinedRequests = fresh.map(v => buildInlinedRequest(v.url, displayName));
     const batchKeys = fresh.map(v => v.videoId);
 
-    const batch = await ai.batches.create({
-      model: chosenModel,
-      src: inlinedRequests,
-      config: { displayName: `yt2txt-${person}-${Date.now()}` },
-    });
+    const { batch, modelUsed } = await submitBatchWithFallback(ai, chosenModel, inlinedRequests, person);
 
     await updatePerson(person, {
       status: "batch_pending",
@@ -202,6 +212,7 @@ export async function runPersonJob({ person, displayName, model }) {
       batchName: batch.name,
       batchKeys,
       batchSubmittedAt: Date.now(),
+      model: modelUsed,
     });
   } catch (err) {
     console.error("person job submit failed", err);
@@ -212,11 +223,43 @@ export async function runPersonJob({ person, displayName, model }) {
   }
 }
 
-async function generateMeta(ai, model, displayName, videos) {
-  const context = videos.map(v =>
-    `--- Video: ${v.title} (${v.url}) videoId=${v.videoId} ---\n${v.markdown}\n`
-  ).join("\n");
+const FALLBACK_MODEL = "models/gemini-2.5-flash";
 
+async function submitBatchWithFallback(ai, model, inlinedRequests, person) {
+  try {
+    const batch = await ai.batches.create({
+      model,
+      src: inlinedRequests,
+      config: { displayName: `yt2txt-${person}-${Date.now()}` },
+    });
+    return { batch, modelUsed: model };
+  } catch (err) {
+    if (model !== FALLBACK_MODEL && isRetryableModelError(err)) {
+      console.warn(`batch submit failed on ${model} (${err?.status || ''} ${err?.message || ''}), falling back to ${FALLBACK_MODEL}`);
+      const batch = await ai.batches.create({
+        model: FALLBACK_MODEL,
+        src: inlinedRequests,
+        config: { displayName: `yt2txt-${person}-${Date.now()}-fallback` },
+      });
+      return { batch, modelUsed: FALLBACK_MODEL };
+    }
+    throw err;
+  }
+}
+
+function isRetryableModelError(err) {
+  const status = err?.status ?? err?.response?.status;
+  if (status === 429 || status === 503 || status === 500) return true;
+  const msg = String(err?.message || "").toLowerCase();
+  return msg.includes("resource_exhausted")
+    || msg.includes("quota")
+    || msg.includes("rate limit")
+    || msg.includes("unavailable")
+    || msg.includes("overloaded")
+    || msg.includes("high demand");
+}
+
+async function callMeta(ai, model, displayName, context) {
   const response = await ai.models.generateContent({
     model,
     contents: [{
@@ -231,6 +274,22 @@ async function generateMeta(ai, model, displayName, videos) {
   const jsonMatch = raw.match(/\{[\s\S]*\}/);
   if (!jsonMatch) throw new Error("meta response did not contain JSON");
   return JSON.parse(jsonMatch[0]);
+}
+
+async function generateMeta(ai, model, displayName, videos) {
+  const context = videos.map(v =>
+    `--- Video: ${v.title} (${v.url}) videoId=${v.videoId} ---\n${v.markdown}\n`
+  ).join("\n");
+
+  try {
+    return await callMeta(ai, model, displayName, context);
+  } catch (err) {
+    if (model !== FALLBACK_MODEL && isRetryableModelError(err)) {
+      console.warn(`meta-summary failed on ${model} (${err?.status || ''} ${err?.message || ''}), falling back to ${FALLBACK_MODEL}`);
+      return await callMeta(ai, FALLBACK_MODEL, displayName, context);
+    }
+    throw err;
+  }
 }
 
 async function finalisePerson(ai, model, person, displayName) {

@@ -190,7 +190,7 @@ export async function handler(event) {
         if (!isAllowedModel(model)) {
           return { statusCode: 400, headers: JSON_HEADERS, body: JSON.stringify({ error: "model not supported" }) };
         }
-        return await researchPerson(body.person, model);
+        return await researchPerson(body.person, model, { force: !!body.force });
       }
       if (!body.url || typeof body.url !== "string" || !YOUTUBE_URL_RE.test(body.url)) {
         return {

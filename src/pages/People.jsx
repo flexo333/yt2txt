@@ -51,11 +51,16 @@ const People = () => {
   }, [selected]);
 
   useEffect(() => {
-    if (detail && (detail.status === 'done' || detail.status === 'error')) {
+    if (!selected || !detail) return;
+    const terminal = detail.status === 'done' || detail.status === 'error';
+    if (terminal) {
       clearInterval(pollRef.current);
+      pollRef.current = null;
       loadPeople();
+    } else if (!pollRef.current) {
+      pollRef.current = setInterval(() => loadDetail(selected), 3000);
     }
-  }, [detail?.status]);
+  }, [detail?.status, selected]);
 
   const startResearch = async () => {
     if (!name.trim()) return;
@@ -78,6 +83,25 @@ const People = () => {
     }
   };
 
+  const retryResearch = async (personName) => {
+    if (!personName) return;
+    setBusy(true);
+    try {
+      const res = await fetch(LAMBDA_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ action: 'research', person: personName, force: true }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      await loadDetail(selected);
+      loadPeople();
+    } catch (e) {
+      alert('Failed to retry: ' + e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   if (selected && detail) {
     const { displayName, status, progress, meta, videos = [], errorMessage } = detail;
     const bestId = meta?.bestVideoId;
@@ -86,6 +110,13 @@ const People = () => {
         <div className="article-actions">
           <button className="btn btn--secondary" onClick={() => { setSelected(null); setDetail(null); }}>
             ← Back to People
+          </button>
+          <button
+            className="btn btn--secondary"
+            onClick={() => retryResearch(displayName)}
+            disabled={busy}
+          >
+            {busy ? 'Retrying…' : 'Retry'}
           </button>
         </div>
         <h2>{displayName}</h2>
