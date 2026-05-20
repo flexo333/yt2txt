@@ -13,7 +13,7 @@
 **Important environment notes:**
 - This repo has **no test framework and no linter** (`CLAUDE.md`). Do not invent `make test` / `make lint`. Verification is done with `node` smoke tests, `make build`, and manual checks.
 - Backend smoke tests that hit the Gemini API need `GEMINI_API_KEY`. The repo-root `.env` has it. Load it with `set -a; . ../../.env; set +a` from inside `backend/summarise/`.
-- The Lambda `node_modules/` (built by `make build-lambda`) is present and the packages are pure JS, so importing `handler.js` with host `node` works.
+- `handler.js` **cannot** be imported by local `node`: it statically imports the AWS SDK, which is provided by the Lambda runtime and is not in `node_modules` (only `@google/genai` and its deps are installed). Local smoke tests therefore run **verbatim copies** of pure logic; full handler behaviour is verified against the deployed Lambda in Task 6.
 
 ---
 
@@ -184,15 +184,39 @@ cd backend/summarise && node --check handler.js
 ```
 Expected: no output, exit code 0.
 
-- [ ] **Step 3: Smoke-test `getAllowedModels()` against the live API**
+- [ ] **Step 3: Smoke-test the filter against the live API**
 
-Run from `backend/summarise/`:
-`getAllowedModels()` is module-internal (not exported); it is exercised end-to-end via the `?models=1` path in Task 3. Here, confirm the live `models.list()` call plus `filterModels()` produce Flash/Gemma models. Run from `backend/summarise/`:
+`handler.js` cannot be imported by local `node`, so verify the filtering against real API data by running a **verbatim copy** of `isWantedModel` and `filterModels` (copied character-for-character from `handler.js`) alongside a live `models.list()` call. Run from `backend/summarise/`:
 ```bash
 set -a; . ../../.env; set +a
 node --input-type=module -e '
-import { filterModels } from "./handler.js";
 import { GoogleGenAI } from "@google/genai";
+
+// >>> verbatim copy of isWantedModel + filterModels from handler.js <<<
+function isWantedModel(name) {
+  const n = name.toLowerCase();
+  if (n.includes("gemma")) return true;
+  if (n.includes("gemini") && n.includes("flash")) {
+    return !["tts", "image", "audio", "live"].some((bad) => n.includes(bad));
+  }
+  return false;
+}
+function filterModels(rawModels) {
+  const wanted = (rawModels || []).filter(
+    (m) =>
+      m &&
+      typeof m.name === "string" &&
+      (m.supportedActions || []).includes("generateContent") &&
+      isWantedModel(m.name),
+  );
+  const toOption = (m) => ({ value: m.name, label: m.displayName || m.name });
+  const byNameDesc = (a, b) => b.value.localeCompare(a.value);
+  const gemini = wanted.filter((m) => m.name.toLowerCase().includes("gemini")).map(toOption).sort(byNameDesc);
+  const gemma = wanted.filter((m) => !m.name.toLowerCase().includes("gemini")).map(toOption).sort(byNameDesc);
+  return [...gemini, ...gemma];
+}
+// >>> end copy <<<
+
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY, apiVersion: "v1beta" });
 const raw = [];
 for await (const m of await ai.models.list({})) { raw.push(m); }
@@ -200,7 +224,7 @@ console.log("raw models from API:", raw.length);
 console.log(JSON.stringify(filterModels(raw), null, 2));
 '
 ```
-Expected: prints a non-zero raw count, then a JSON array containing Flash-family Gemini and Gemma models only (no Pro, no embedding/TTS/image). If the array is non-empty, the filter works against real API data.
+Expected: a non-zero raw count, then a JSON array of Flash-family Gemini + Gemma models only (no Pro, embedding, TTS, or image models). Confirm the copied functions are character-for-character identical to those in `handler.js`.
 
 - [ ] **Step 4: Commit**
 
@@ -359,41 +383,11 @@ cd backend/summarise && node --check handler.js && grep -n "ALLOWED_MODELS" hand
 ```
 Expected: `node --check` produces no output; `grep` produces **no output** (exit code 1) — there must be zero remaining references to `ALLOWED_MODELS`.
 
-- [ ] **Step 7: Smoke-test the `?models=1` endpoint locally**
+- [ ] **Step 7: Note — functional verification is deferred to deploy**
 
-Run from `backend/summarise/`:
-```bash
-set -a; . ../../.env; set +a
-node --input-type=module -e '
-import { handler } from "./handler.js";
-const auth = process.env.SHARED_SECRET ? { "x-yt2txt-key": process.env.SHARED_SECRET } : {};
-const res = await handler({ httpMethod: "GET", headers: auth, queryStringParameters: { models: "1" } });
-console.log("status:", res.statusCode);
-console.log(res.body);
-'
-```
-Expected: `status: 200` and a body `{"models":[{"value":...,"label":...}, ...]}` containing only Flash-family Gemini and Gemma models.
+`handler.js` cannot be imported by local `node` (it statically imports the runtime-provided AWS SDK). The end-to-end behaviour of this task — the `?models=1` response shape and the rejection of an off-list model — is verified against the deployed Lambda in Task 6 (Steps 3 and 3a). For this task, the syntax check and the `ALLOWED_MODELS`-removal grep in Step 6 are the local gate.
 
-- [ ] **Step 8: Smoke-test that an off-list model is rejected**
-
-Run from `backend/summarise/`:
-```bash
-set -a; . ../../.env; set +a
-node --input-type=module -e '
-import { handler } from "./handler.js";
-const auth = process.env.SHARED_SECRET ? { "x-yt2txt-key": process.env.SHARED_SECRET } : {};
-const res = await handler({
-  httpMethod: "POST",
-  headers: auth,
-  body: JSON.stringify({ url: "https://youtu.be/dQw4w9WgXcQ", model: "models/gemini-2.5-pro" }),
-});
-console.log("status:", res.statusCode);
-console.log(res.body);
-'
-```
-Expected: `status: 400` and body `{"error":"model is not supported"}` (Pro is not in the filtered list).
-
-- [ ] **Step 9: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add backend/summarise/handler.js
@@ -627,6 +621,16 @@ Get the API URL with `make infra-outputs`, then:
 curl -s '<api_url>?models=1' -H 'x-yt2txt-key: <SHARED_SECRET from .env>'
 ```
 Expected: `{"models":[{"value":...,"label":...}, ...]}` listing Flash-family Gemini + Gemma models.
+
+- [ ] **Step 3a: Verify an off-list model is rejected in production**
+
+```bash
+curl -s -i -X POST '<api_url>' \
+  -H 'content-type: application/json' \
+  -H 'x-yt2txt-key: <SHARED_SECRET from .env>' \
+  -d '{"url":"https://youtu.be/dQw4w9WgXcQ","model":"models/gemini-2.5-pro"}'
+```
+Expected: HTTP `400` with body `{"error":"model is not supported"}` — `gemini-2.5-pro` is not in the filtered list.
 
 - [ ] **Step 4: Deploy the frontend**
 
