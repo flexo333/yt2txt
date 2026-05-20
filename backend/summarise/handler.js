@@ -32,7 +32,7 @@ const MODEL_CACHE_FALLBACK_TTL_MS = 5 * 60 * 1000;
 // Used when ai.models.list() fails or returns nothing usable, so summarising
 // and request validation never hard-fail on a Google API hiccup.
 const FALLBACK_MODELS = [
-  { value: "models/gemini-3-flash-preview", label: "Gemini 3 Flash" },
+  { value: DEFAULT_MODEL, label: "Gemini 3 Flash" },
   { value: "models/gemini-flash-lite-latest", label: "Gemini 3.1 Flash Lite" },
   { value: "models/gemini-2.5-flash", label: "Gemini 2.5 Flash" },
   { value: "models/gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite" },
