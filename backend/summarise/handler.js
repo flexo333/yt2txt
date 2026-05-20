@@ -106,6 +106,30 @@ async function getAllowedModels() {
   return list;
 }
 
+const MAX_MODEL_ATTEMPTS = 4;
+
+// Copy of people.js's predicate (kept separate so people.js's own fallback
+// stays untouched). True for errors where trying a different model may help.
+function isRetryableModelError(err) {
+  const status = err?.status ?? err?.response?.status;
+  if (status === 429 || status === 503 || status === 500) return true;
+  const msg = String(err?.message || "").toLowerCase();
+  return msg.includes("resource_exhausted")
+    || msg.includes("quota")
+    || msg.includes("rate limit")
+    || msg.includes("unavailable")
+    || msg.includes("overloaded")
+    || msg.includes("high demand");
+}
+
+// Pure: ordered models to try — the requested model first, then the rest of
+// the allowed list, capped at MAX_MODEL_ATTEMPTS. Exported for smoke-testing.
+export function buildModelChain(requested, allowedModels) {
+  const values = (allowedModels || []).map((m) => m.value);
+  const ordered = [requested, ...values.filter((v) => v !== requested)];
+  return ordered.slice(0, MAX_MODEL_ATTEMPTS);
+}
+
 function extractTitle(markdown) {
   const match = markdown.match(/^#{1,2}\s+(.+)/m);
   return match ? match[1].trim() : "Untitled";
