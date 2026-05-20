@@ -24,13 +24,13 @@ There is no `make test` / `make lint` — don't invent one.
 
 Three layers, each with one source of truth:
 
-**Frontend (`src/`, `index.html`)** — single `App.jsx` component (no router, just `page` state). On mount it `GET`s `VITE_LAMBDA_URL` to hydrate history; "Generate" `POST`s `{ url, model }`. `MODEL_OPTIONS` in `App.jsx` **must stay in sync with `ALLOWED_MODELS` in `backend/summarise/handler.js`** — the Lambda rejects anything not in its allow-list.
+**Frontend (`src/`, `index.html`)** — single `App.jsx` component (no router, just `page` state). On mount it `GET`s `VITE_LAMBDA_URL` to hydrate history and `GET`s `?models=1` to populate the model dropdown; "Generate" `POST`s `{ url, model }`. The dropdown is populated dynamically — `FALLBACK_MODEL_OPTIONS` in `App.jsx` is only rendered if that fetch fails.
 
 **Backend (`backend/summarise/handler.js`)** — one Lambda, one handler, dispatched by HTTP method:
 - `POST` → summarise + persist to DynamoDB
 - `POST { action: "research", person }` → kick off async "person research" job (see `people.js`). Lambda self-invokes with `{ __personJob: true }` payload.
 - `GET` → list last 50 summaries (DynamoDB `Scan`, sorted by `createdAt`)
-- `GET ?models=1` → list available Gemini models (for debugging)
+- `GET ?models=1` → list allowed models as `[{ value, label }]` (Flash-family Gemini + Gemma); consumed by the frontend dropdown
 - `GET ?models=2&url=…&prompt=…` → one-off summary preview without persisting
 - `GET ?people=1` → list tracked people
 - `GET ?person=NAME` → job status + per-video summaries + meta-summary for that person
@@ -61,7 +61,7 @@ Exported outputs (`bucket`, `distribution_id`, `api_url`, `lambda_function_name`
 - **CORS**: `allow_origins` in the Function URL is hardcoded to `https://yt2txt.willbright.link` and `http://localhost:5173`. Any other origin (preview deploys, alternate dev ports) needs to be added in `__main__.py` and re-applied.
 - **`GEMINI_API_KEY`** is baked into the Lambda's environment variables by Pulumi at deploy time, read from `os.environ` — it must be present in the shell running `make infra-up` (and is passed via `.env` → `docker-compose.yml` → the `pulumi` service).
 - **`YOUTUBE_API_KEY`** follows the same pattern — required for the "People" research flow. Needs `YOUTUBE_API_KEY` in `.env` locally and as a GitHub Actions secret for CI.
-- **Allowed-model list** is duplicated between frontend (`MODEL_OPTIONS` in `App.jsx`) and backend (`ALLOWED_MODELS` in `handler.js`). When adding/removing a model, edit both.
+- **Allowed-model list is dynamic**: `handler.js` derives it from `ai.models.list()` via `filterModels()` (Flash-family Gemini + Gemma), cached 24h. The same list backs both `?models=1` and `isAllowedModel()`, so the dropdown and the request allow-list cannot drift. To change which models appear, edit the `isWantedModel()` filter — not a hand-kept list. `FALLBACK_MODELS` (backend) and `FALLBACK_MODEL_OPTIONS` (frontend) are only used when the live fetch fails; keep them roughly current but they are not load-bearing.
 - **Batch SLO is 24h**: the Gemini Batch API guarantees completion within 24h but is usually much faster. Person research is no longer "wait ~5 min and it's done" — the UI should reflect `batch_pending` as a legitimate state, not stuck. The poller runs every 3 min so post-completion lag is small.
 - **Stale `running` rows from pre-batch runs** will block new `researchPerson` calls (the alreadyRunning guard checks `running | queued | batch_pending`). Manually update or delete the DDB row if a person is stuck from before this refactor.
 
