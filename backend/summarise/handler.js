@@ -52,10 +52,9 @@ const FALLBACK_MODELS = [
 
 function isWantedModel(name) {
   const n = name.toLowerCase();
+  if (["tts", "image", "audio", "live"].some((bad) => n.includes(bad))) return false;
   if (n.includes("gemma")) return true;
-  if (n.includes("gemini") && n.includes("flash")) {
-    return !["tts", "image", "audio", "live"].some((bad) => n.includes(bad));
-  }
+  if (n.includes("gemini") && n.includes("flash")) return true;
   return false;
 }
 
