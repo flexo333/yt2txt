@@ -368,7 +368,7 @@ with:
         return {
           statusCode: 400,
           headers: JSON_HEADERS,
-          body: JSON.stringify({ error: "model is not supported" }),
+          body: JSON.stringify({ error: "model not supported" }),
         };
       }
 ```
@@ -628,7 +628,7 @@ curl -s -i -X POST '<api_url>' \
   -H 'x-yt2txt-key: <SHARED_SECRET from .env>' \
   -d '{"url":"https://youtu.be/dQw4w9WgXcQ","model":"models/gemini-2.5-pro"}'
 ```
-Expected: HTTP `400` with body `{"error":"model is not supported"}` — `gemini-2.5-pro` is not in the filtered list.
+Expected: HTTP `400` with body `{"error":"model not supported"}` — `gemini-2.5-pro` is not in the filtered list.
 
 - [ ] **Step 4: Deploy the frontend**
 
