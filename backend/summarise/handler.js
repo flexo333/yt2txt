@@ -25,16 +25,7 @@ const SHARED_SECRET = process.env.SHARED_SECRET || "";
 
 const YOUTUBE_URL_RE = /^https:\/\/(www\.)?(youtube\.com\/watch\?v=[\w-]{11}|youtu\.be\/[\w-]{11})(\S*)?$/;
 
-const ALLOWED_MODELS = {
-  "Gemma 4 26B": "models/gemma-4-26b-a4b-it",
-  "Gemma 4 31B": "models/gemma-4-31b-it",
-  "Gemini 2.5 Flash": "models/gemini-2.5-flash",
-  "Gemini 3 Flash": "models/gemini-3-flash-preview",
-  "Gemini 3.1 Flash Lite": "models/gemini-flash-lite-latest",
-  "Gemini 2.5 Flash Lite": "models/gemini-2.5-flash-lite",
-};
-
-const DEFAULT_MODEL = ALLOWED_MODELS["Gemini 3 Flash"];
+const DEFAULT_MODEL = "models/gemini-3-flash-preview";
 
 const MODEL_CACHE_SUCCESS_TTL_MS = 24 * 60 * 60 * 1000;
 const MODEL_CACHE_FALLBACK_TTL_MS = 5 * 60 * 1000;
@@ -123,8 +114,9 @@ function extractTitle(markdown) {
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
 
-function isAllowedModel(model) {
-  return Object.values(ALLOWED_MODELS).includes(model);
+async function isAllowedModel(model) {
+  const models = await getAllowedModels();
+  return models.some((m) => m.value === model);
 }
 
 function headerValue(event, name) {
@@ -198,18 +190,11 @@ async function summarise(url, model = DEFAULT_MODEL) {
 }
 
 async function listModels() {
-  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY, apiVersion: "v1beta" });
-  const pager = await ai.models.list({});
-  const names = [];
-  for await (const model of pager) {
-    if (model?.name) names.push(model.name);
-    if (names.length >= 200) break;
-  }
-
+  const models = await getAllowedModels();
   return {
     statusCode: 200,
     headers: JSON_HEADERS,
-    body: JSON.stringify({ models: names }),
+    body: JSON.stringify({ models }),
   };
 }
 
@@ -270,7 +255,7 @@ export async function handler(event) {
           return { statusCode: 400, headers: JSON_HEADERS, body: JSON.stringify({ error: "person required" }) };
         }
         const model = body.model || DEFAULT_MODEL;
-        if (!isAllowedModel(model)) {
+        if (!(await isAllowedModel(model))) {
           return { statusCode: 400, headers: JSON_HEADERS, body: JSON.stringify({ error: "model not supported" }) };
         }
         return await researchPerson(body.person, model, { force: !!body.force });
@@ -283,14 +268,11 @@ export async function handler(event) {
         };
       }
       const model = body.model || DEFAULT_MODEL;
-      if (!isAllowedModel(model)) {
+      if (!(await isAllowedModel(model))) {
         return {
           statusCode: 400,
           headers: JSON_HEADERS,
-          body: JSON.stringify({
-            error: "model is not supported",
-            allowedModels: ALLOWED_MODELS,
-          }),
+          body: JSON.stringify({ error: "model is not supported" }),
         };
       }
       return await summarise(body.url, model);
