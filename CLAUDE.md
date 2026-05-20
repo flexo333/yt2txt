@@ -27,11 +27,10 @@ Three layers, each with one source of truth:
 **Frontend (`src/`, `index.html`)** — single `App.jsx` component (no router, just `page` state). On mount it `GET`s `VITE_LAMBDA_URL` to hydrate history and `GET`s `?models=1` to populate the model dropdown; "Generate" `POST`s `{ url, model }`. The dropdown is populated dynamically — `FALLBACK_MODEL_OPTIONS` in `App.jsx` is only rendered if that fetch fails.
 
 **Backend (`backend/summarise/handler.js`)** — one Lambda, one handler, dispatched by HTTP method:
-- `POST` → summarise + persist to DynamoDB
+- `POST` → summarise + persist to DynamoDB. On a quota/rate-limit error the summariser falls back through the allowed-model list (chosen model + up to 3 more) and records on the item which model actually produced the summary.
 - `POST { action: "research", person }` → kick off async "person research" job (see `people.js`). Lambda self-invokes with `{ __personJob: true }` payload.
 - `GET` → list last 50 summaries (DynamoDB `Scan`, sorted by `createdAt`)
 - `GET ?models=1` → list allowed models as `[{ value, label }]` (Flash-family Gemini + Gemma); consumed by the frontend dropdown
-- `GET ?models=2&url=…&prompt=…` → one-off summary preview without persisting
 - `GET ?people=1` → list tracked people
 - `GET ?person=NAME` → job status + per-video summaries + meta-summary for that person
 
