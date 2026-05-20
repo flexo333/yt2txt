@@ -25,6 +25,7 @@ const SHARED_SECRET = process.env.SHARED_SECRET || "";
 
 const YOUTUBE_URL_RE = /^https:\/\/(www\.)?(youtube\.com\/watch\?v=[\w-]{11}|youtu\.be\/[\w-]{11})(\S*)?$/;
 
+// Must appear in FALLBACK_MODELS and pass isWantedModel().
 const DEFAULT_MODEL = "models/gemini-3-flash-preview";
 
 const MODEL_CACHE_SUCCESS_TTL_MS = 24 * 60 * 60 * 1000;
@@ -272,7 +273,7 @@ export async function handler(event) {
         return {
           statusCode: 400,
           headers: JSON_HEADERS,
-          body: JSON.stringify({ error: "model is not supported" }),
+          body: JSON.stringify({ error: "model not supported" }),
         };
       }
       return await summarise(body.url, model);
