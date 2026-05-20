@@ -22,13 +22,16 @@ const MARKDOWN_COMPONENTS = {
   ),
 };
 
-const MODEL_OPTIONS = [
-  { label: 'Gemma 4 26B', value: 'models/gemma-4-26b-a4b-it' },
-  { label: 'Gemma 4 31B', value: 'models/gemma-4-31b-it' },
-  { label: 'Gemini 2.5 Flash', value: 'models/gemini-2.5-flash' },
+const PREFERRED_DEFAULT = 'models/gemini-3-flash-preview';
+
+// Rendered while the ?models=1 fetch is pending or if it fails.
+const FALLBACK_MODEL_OPTIONS = [
   { label: 'Gemini 3 Flash', value: 'models/gemini-3-flash-preview' },
   { label: 'Gemini 3.1 Flash Lite', value: 'models/gemini-flash-lite-latest' },
+  { label: 'Gemini 2.5 Flash', value: 'models/gemini-2.5-flash' },
   { label: 'Gemini 2.5 Flash Lite', value: 'models/gemini-2.5-flash-lite' },
+  { label: 'Gemma 4 31B', value: 'models/gemma-4-31b-it' },
+  { label: 'Gemma 4 26B', value: 'models/gemma-4-26b-a4b-it' },
 ];
 
 const BrightBlogApp = () => {
@@ -38,13 +41,26 @@ const BrightBlogApp = () => {
   const [history, setHistory] = useState([]);
   const [page, setPage] = useState('home');
   const [detailItem, setDetailItem] = useState(null);
-  const [model, setModel] = useState('models/gemini-3-flash-preview');
+  const [model, setModel] = useState(PREFERRED_DEFAULT);
+  const [modelOptions, setModelOptions] = useState(FALLBACK_MODEL_OPTIONS);
 
   useEffect(() => {
     if (!LAMBDA_URL) return;
     fetch(LAMBDA_URL, { headers: authHeaders() })
       .then(r => r.json())
       .then(({ summaries }) => setHistory(summaries || []))
+      .catch(console.error);
+  }, []);
+
+  useEffect(() => {
+    if (!LAMBDA_URL) return;
+    fetch(`${LAMBDA_URL}?models=1`, { headers: authHeaders() })
+      .then(r => r.json())
+      .then(({ models }) => {
+        if (!Array.isArray(models) || models.length === 0) return;
+        setModelOptions(models);
+        setModel(prev => (models.some(m => m.value === prev) ? prev : models[0].value));
+      })
       .catch(console.error);
   }, []);
 
@@ -198,7 +214,7 @@ const BrightBlogApp = () => {
             disabled={loading}
             aria-label="Model"
           >
-            {MODEL_OPTIONS.map((option) => (
+            {modelOptions.map((option) => (
               <option key={option.value} value={option.value}>
                 {option.label}
               </option>
