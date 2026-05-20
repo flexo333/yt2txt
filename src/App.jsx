@@ -43,6 +43,7 @@ const BrightBlogApp = () => {
   const [detailItem, setDetailItem] = useState(null);
   const [model, setModel] = useState(PREFERRED_DEFAULT);
   const [modelOptions, setModelOptions] = useState(FALLBACK_MODEL_OPTIONS);
+  const [contentModel, setContentModel] = useState('');
 
   useEffect(() => {
     if (!LAMBDA_URL) return;
@@ -74,9 +75,10 @@ const BrightBlogApp = () => {
         body: JSON.stringify({ url, model }),
       });
       if (!res.ok) throw new Error(await res.text());
-      const { markdown, title, date } = await res.json();
+      const { markdown, title, date, model: usedModel } = await res.json();
       setContent(markdown);
-      setHistory(prev => [{ url, title, date, summary: markdown.slice(0, 8000) }, ...prev]);
+      setContentModel(usedModel || '');
+      setHistory(prev => [{ url, title, date, summary: markdown.slice(0, 8000), model: usedModel }, ...prev]);
       setPage('home');
     } catch (error) {
       alert('Error generating summary. Check the URL and try again.');
@@ -104,6 +106,12 @@ const BrightBlogApp = () => {
 
   const closeDetail = () => {
     setDetailItem(null);
+  };
+
+  const modelLabel = (value) => {
+    if (!value) return '';
+    const found = modelOptions.find((o) => o.value === value);
+    return found ? found.label : value.replace(/^models\//, '');
   };
 
   const Header = () => (
@@ -149,6 +157,11 @@ const BrightBlogApp = () => {
               Download .md
             </button>
           </div>
+          {detailItem.model && (
+            <div className="summary-meta">
+              <span className="model-tag">{modelLabel(detailItem.model)}</span>
+            </div>
+          )}
           <article className="prose">
             <ReactMarkdown urlTransform={MARKDOWN_URL_TRANSFORM} components={MARKDOWN_COMPONENTS}>{detailItem.summary}</ReactMarkdown>
           </article>
@@ -185,6 +198,7 @@ const BrightBlogApp = () => {
                 >
                   <div className="history-list-meta">
                     <span className="history-date">{item.date}</span>
+                    {item.model && <span className="model-tag">{modelLabel(item.model)}</span>}
                   </div>
                   <h3 className="history-list-title">{item.title || item.url}</h3>
                   {item.summary && (
@@ -238,6 +252,11 @@ const BrightBlogApp = () => {
 
         {content ? (
           <>
+            {contentModel && (
+              <div className="summary-meta">
+                <span className="model-tag">{modelLabel(contentModel)}</span>
+              </div>
+            )}
             <div className="article-actions">
               <button className="btn btn--secondary" onClick={() => downloadMarkdown(content)}>
                 Download .md
@@ -266,6 +285,7 @@ const BrightBlogApp = () => {
                   <div className="history-date">{item.date}</div>
                   <span className="history-title">{item.title || item.url}</span>
                   <span className="history-url">{item.url}</span>
+                  {item.model && <span className="model-tag">{modelLabel(item.model)}</span>}
                 </button>
               ))}
             </div>
