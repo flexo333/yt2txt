@@ -1,5 +1,10 @@
 const YT_API = "https://www.googleapis.com/youtube/v3";
 
+export function extractVideoId(url) {
+  const match = String(url || "").match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([\w-]{11})/);
+  return match ? match[1] : null;
+}
+
 function monthsAgoISO(months) {
   const d = new Date();
   d.setMonth(d.getMonth() - months);

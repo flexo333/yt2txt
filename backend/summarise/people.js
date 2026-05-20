@@ -2,7 +2,7 @@ import { GoogleGenAI } from "@google/genai";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, PutCommand, QueryCommand, ScanCommand, GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
-import { searchVideosByPerson, getVideoMetadata } from "./youtube.js";
+import { searchVideosByPerson, getVideoMetadata, extractVideoId } from "./youtube.js";
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const lambda = new LambdaClient({});
@@ -31,6 +31,8 @@ Output (plain Markdown):
 3. 'Key viewpoints' — 3–6 bullets capturing this person's distinctive points. Each bullet ≤ 25 words.
 4. 'Notable quotes' — up to 3 short verbatim-ish quotes with timestamp links like [MM:SS](https://youtu.be/VIDEO_ID?t=SECONDS).
 5. 'Topics covered' — comma-separated short tags.
+
+Use exactly the Video ID provided below in timestamp links. Do not infer it from the content.
 
 Keep it tight. No preamble, no recap, no filler.`;
 
@@ -133,12 +135,13 @@ async function updatePerson(person, attrs) {
   }));
 }
 
-function buildInlinedRequest(url, displayName) {
+function buildInlinedRequest(video, displayName) {
+  const videoId = video.videoId || extractVideoId(video.url);
   return {
     contents: [{
       parts: [
-        { fileData: { fileUri: url } },
-        { text: `Speaker to focus on: ${displayName}\n\n${VIDEO_PROMPT}` },
+        { fileData: { fileUri: video.url } },
+        { text: `Speaker to focus on: ${displayName}\nVideo URL: ${video.url}\nVideo ID: ${videoId}\n\n${VIDEO_PROMPT}` },
       ],
     }],
   };
@@ -201,7 +204,7 @@ export async function runPersonJob({ person, displayName, model }) {
       }));
     }
 
-    const inlinedRequests = fresh.map(v => buildInlinedRequest(v.url, displayName));
+    const inlinedRequests = fresh.map(v => buildInlinedRequest(v, displayName));
     const batchKeys = fresh.map(v => v.videoId);
 
     const { batch, modelUsed } = await submitBatchWithFallback(ai, chosenModel, inlinedRequests, person);

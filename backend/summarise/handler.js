@@ -2,6 +2,7 @@ import { GoogleGenAI } from "@google/genai";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, PutCommand, ScanCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
 import { researchPerson, runPersonJob, getPerson, listPeople, pollPendingBatches } from "./people.js";
+import { extractVideoId } from "./youtube.js";
 
 const SYSTEM_PROMPT = `Role: You are a no-nonsense Content Analyst. Your goal is to give me the "meat" of the video in plain English. Cut all fluff, repetitive points, and AI-sounding filler.
 
@@ -16,7 +17,7 @@ Instructions:
 5. Key Insights: Use headers for main topics.
  Constraint: Skip the ads and random filler conversation.
  Output: Distill the insights and a timestamp link like this: [HH:MM:SS](https://youtu.be/VIDEO_ID?t=SECONDS).
- Get the video ID from the URL and use it in the timestamp link.
+ Use exactly the Video ID provided below in timestamp links. Do not infer it from the content.
 Tone: Clear, direct, and brief. Use plain Markdown. No fancy jargon.`;
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TABLE = process.env.DYNAMODB_TABLE;
@@ -67,12 +68,14 @@ async function summarise(url, model = DEFAULT_MODEL) {
   }
 
   const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY, apiVersion: "v1beta" });
+  const videoId = extractVideoId(url);
+  const promptText = `${SYSTEM_PROMPT}\n\nVideo URL: ${url}\nVideo ID: ${videoId}`;
   const response = await ai.models.generateContent({
     model,
     contents: [{
       parts: [
         { fileData: { fileUri: url } },
-        { text: SYSTEM_PROMPT },
+        { text: promptText },
       ],
     }],
   });
