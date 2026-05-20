@@ -151,10 +151,10 @@ function headerValue(event, name) {
   return undefined;
 }
 
-async function summarise(url, model = DEFAULT_MODEL) {
+async function summarise(url, requestedModel = DEFAULT_MODEL) {
   const existing = await ddb.send(new GetCommand({ TableName: TABLE, Key: { url } }));
   if (existing.Item) {
-    const { markdown, title, date } = existing.Item;
+    const { markdown, title, date, model } = existing.Item;
     return {
       statusCode: 200,
       headers: JSON_HEADERS,
@@ -165,16 +165,41 @@ async function summarise(url, model = DEFAULT_MODEL) {
   const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY, apiVersion: "v1beta" });
   const videoId = extractVideoId(url);
   const promptText = `${SYSTEM_PROMPT}\n\nVideo URL: ${url}\nVideo ID: ${videoId}`;
-  const response = await ai.models.generateContent({
-    model,
-    contents: [{
-      parts: [
-        { fileData: { fileUri: url } },
-        { text: promptText },
-      ],
-    }],
-  });
-  const markdown = response.text;
+  const chain = buildModelChain(requestedModel, await getAllowedModels());
+
+  let markdown;
+  let usedModel;
+  let lastErr;
+  for (const candidate of chain) {
+    try {
+      const response = await ai.models.generateContent({
+        model: candidate,
+        contents: [{
+          parts: [
+            { fileData: { fileUri: url } },
+            { text: promptText },
+          ],
+        }],
+      });
+      markdown = response.text;
+      usedModel = candidate;
+      break;
+    } catch (err) {
+      lastErr = err;
+      if (!isRetryableModelError(err)) throw err;
+      console.warn(`model ${candidate} failed (${err?.status || ""} ${err?.message || ""}), trying next`);
+    }
+  }
+
+  if (!usedModel) {
+    console.error("all models exhausted for summarise", lastErr);
+    return {
+      statusCode: 503,
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ error: "all models are currently rate-limited — try again shortly" }),
+    };
+  }
+
   const title = extractTitle(markdown);
   const date = new Date().toISOString().split("T")[0];
   const createdAt = Date.now();
@@ -182,7 +207,7 @@ async function summarise(url, model = DEFAULT_MODEL) {
   try {
     await ddb.send(new PutCommand({
       TableName: TABLE,
-      Item: { url, title, markdown, date, createdAt },
+      Item: { url, title, markdown, date, createdAt, model: usedModel },
       ConditionExpression: "attribute_not_exists(#u)",
       ExpressionAttributeNames: { "#u": "url" },
     }));
@@ -198,7 +223,7 @@ async function summarise(url, model = DEFAULT_MODEL) {
           title: again.Item.title,
           url,
           date: again.Item.date,
-          model,
+          model: again.Item.model,
           cached: true,
         }),
       };
@@ -208,7 +233,7 @@ async function summarise(url, model = DEFAULT_MODEL) {
   return {
     statusCode: 200,
     headers: JSON_HEADERS,
-    body: JSON.stringify({ markdown, title, url, date, model }),
+    body: JSON.stringify({ markdown, title, url, date, model: usedModel }),
   };
 }
 
@@ -226,8 +251,8 @@ async function listSummaries() {
   const summaries = (result.Items || [])
     .sort((a, b) => b.createdAt - a.createdAt)
     .slice(0, 50)
-    .map(({ url, title, date, createdAt, markdown }) => ({
-      url, title, date, createdAt,
+    .map(({ url, title, date, createdAt, markdown, model }) => ({
+      url, title, date, createdAt, model,
       summary: (markdown || '').slice(0, 8000),
     }));
 
