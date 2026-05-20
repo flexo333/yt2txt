@@ -54,10 +54,9 @@ const FALLBACK_MODELS = [
 
 function isWantedModel(name) {
   const n = name.toLowerCase();
+  if (["tts", "image", "audio", "live"].some((bad) => n.includes(bad))) return false;
   if (n.includes("gemma")) return true;
-  if (n.includes("gemini") && n.includes("flash")) {
-    return !["tts", "image", "audio", "live"].some((bad) => n.includes(bad));
-  }
+  if (n.includes("gemini") && n.includes("flash")) return true;
   return false;
 }
 
@@ -195,10 +194,9 @@ import { GoogleGenAI } from "@google/genai";
 // >>> verbatim copy of isWantedModel + filterModels from handler.js <<<
 function isWantedModel(name) {
   const n = name.toLowerCase();
+  if (["tts", "image", "audio", "live"].some((bad) => n.includes(bad))) return false;
   if (n.includes("gemma")) return true;
-  if (n.includes("gemini") && n.includes("flash")) {
-    return !["tts", "image", "audio", "live"].some((bad) => n.includes(bad));
-  }
+  if (n.includes("gemini") && n.includes("flash")) return true;
   return false;
 }
 function filterModels(rawModels) {
