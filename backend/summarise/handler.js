@@ -3,6 +3,7 @@ import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, PutCommand, ScanCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
 import { researchPerson, runPersonJob, getPerson, listPeople, pollPendingBatches } from "./people.js";
 import { extractVideoId } from "./youtube.js";
+import { DEFAULT_MODEL } from "./constants.js";
 
 const SYSTEM_PROMPT = `Role: You are a no-nonsense Content Analyst. Your goal is to give me the "meat" of the video in plain English. Cut all fluff, repetitive points, and AI-sounding filler.
 
@@ -24,9 +25,6 @@ const TABLE = process.env.DYNAMODB_TABLE;
 const SHARED_SECRET = process.env.SHARED_SECRET || "";
 
 const YOUTUBE_URL_RE = /^https:\/\/(www\.)?(youtube\.com\/watch\?v=[\w-]{11}|youtu\.be\/[\w-]{11})(\S*)?$/;
-
-// Must appear in FALLBACK_MODELS and pass isWantedModel().
-const DEFAULT_MODEL = "models/gemini-3-flash-preview";
 
 const MODEL_CACHE_SUCCESS_TTL_MS = 24 * 60 * 60 * 1000;
 const MODEL_CACHE_FALLBACK_TTL_MS = 5 * 60 * 1000;

@@ -3,6 +3,7 @@ import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, PutCommand, QueryCommand, ScanCommand, GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
 import { searchVideosByPerson, getVideoMetadata, extractVideoId } from "./youtube.js";
+import { DEFAULT_MODEL } from "./constants.js";
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const lambda = new LambdaClient({});
@@ -149,7 +150,7 @@ function buildInlinedRequest(video, displayName) {
 
 export async function runPersonJob({ person, displayName, model }) {
   const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY, apiVersion: "v1beta" });
-  const chosenModel = model || "models/gemini-3-flash-preview";
+  const chosenModel = model || DEFAULT_MODEL;
 
   try {
     await updatePerson(person, {
@@ -317,7 +318,7 @@ async function finalisePerson(ai, model, person, displayName) {
 
 async function handleBatchResult(ai, personRow, batch) {
   const { person, displayName, model, batchKeys = [] } = personRow;
-  const chosenModel = model || "models/gemini-3-flash-preview";
+  const chosenModel = model || DEFAULT_MODEL;
 
   const responses = batch?.dest?.inlinedResponses || [];
   let successes = 0;
