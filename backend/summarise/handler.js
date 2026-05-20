@@ -81,6 +81,41 @@ export function filterModels(rawModels) {
   return [...gemini, ...gemma];
 }
 
+let modelCache = { expires: 0, list: null };
+
+// Returns [{ value, label }] of allowed models. Cached in module scope:
+// 24h after a successful fetch, 5min after a fallback so it retries soon.
+async function getAllowedModels() {
+  if (modelCache.list && Date.now() < modelCache.expires) {
+    return modelCache.list;
+  }
+  let list;
+  let ttl;
+  try {
+    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY, apiVersion: "v1beta" });
+    const pager = await ai.models.list({});
+    const raw = [];
+    for await (const model of pager) {
+      raw.push(model);
+      if (raw.length >= 500) break;
+    }
+    list = filterModels(raw);
+    if (list.length === 0) {
+      console.warn("models.list returned no matching models, using fallback");
+      list = FALLBACK_MODELS;
+      ttl = MODEL_CACHE_FALLBACK_TTL_MS;
+    } else {
+      ttl = MODEL_CACHE_SUCCESS_TTL_MS;
+    }
+  } catch (err) {
+    console.error("models.list failed, using fallback", err);
+    list = FALLBACK_MODELS;
+    ttl = MODEL_CACHE_FALLBACK_TTL_MS;
+  }
+  modelCache = { expires: Date.now() + ttl, list };
+  return list;
+}
+
 function extractTitle(markdown) {
   const match = markdown.match(/^#{1,2}\s+(.+)/m);
   return match ? match[1].trim() : "Untitled";
