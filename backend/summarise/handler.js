@@ -1,7 +1,7 @@
 import { GoogleGenAI } from "@google/genai";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, PutCommand, ScanCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
-import { researchPerson, runPersonJob, getPerson, listPeople, pollPendingBatches } from "./people.js";
+import { researchPerson, runPersonJob, getPerson, listPeople, resumeStalledJobs } from "./people.js";
 import { extractVideoId } from "./youtube.js";
 import { DEFAULT_MODEL } from "./constants.js";
 
@@ -263,14 +263,16 @@ async function listSummaries() {
   };
 }
 
-export async function handler(event) {
+export async function handler(event, context) {
   if (event && event.__personJob) {
-    await runPersonJob(event);
+    const allowed = await getAllowedModels();
+    await runPersonJob(event.person, allowed.map((m) => m.value), context);
     return { statusCode: 200, body: "ok" };
   }
 
-  if (event && event.__pollBatches) {
-    const result = await pollPendingBatches();
+  if (event && event.__resumeJobs) {
+    const result = await resumeStalledJobs();
+    console.log("resumeStalledJobs", JSON.stringify(result));
     return { statusCode: 200, body: JSON.stringify(result) };
   }
 
