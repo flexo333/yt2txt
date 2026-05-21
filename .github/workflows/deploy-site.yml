@@ -40,7 +40,7 @@ jobs:
           echo "::add-mask::$(pulumi stack output --show-secrets yt2txt_shared_secret -s flexo333/flexo333-yt2txt/prod 2>/dev/null)"
           echo "YT2TXT_KEY=$(pulumi stack output --show-secrets yt2txt_shared_secret -s flexo333/flexo333-yt2txt/prod 2>/dev/null)" >> $GITHUB_OUTPUT
 
-      - uses: aws-actions/configure-aws-credentials@v5
+      - uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ steps.config.outputs.DEPLOY_ROLE_ARN }}
           aws-region: ${{ steps.config.outputs.AWS_REGION }}
