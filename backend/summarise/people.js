@@ -4,6 +4,19 @@ import { DynamoDBDocumentClient, PutCommand, QueryCommand, ScanCommand, GetComma
 import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
 import { searchVideosByPerson, getVideoMetadata, extractVideoId } from "./youtube.js";
 import { DEFAULT_MODEL } from "./constants.js";
+import {
+  MAX_VIDEOS,
+  VIDEO_CALL_TIMEOUT_MS,
+  MAX_CONTINUATIONS,
+  MAX_RETRIES_PER_MODEL,
+  pickPendingVideos,
+  canStartVideo,
+  canStartMeta,
+  isStalled,
+  buildModelChain,
+  isRetryableModelError,
+  backoffDelayMs,
+} from "./people-pure.js";
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const lambda = new LambdaClient({});
@@ -12,15 +25,7 @@ const PEOPLE_TABLE = process.env.PEOPLE_TABLE;
 const PEOPLE_VIDEOS_TABLE = process.env.PEOPLE_VIDEOS_TABLE;
 const SELF_FUNCTION_NAME = process.env.AWS_LAMBDA_FUNCTION_NAME;
 
-const MAX_VIDEOS = 8;
-
-const TERMINAL_STATES = new Set([
-  "JOB_STATE_SUCCEEDED",
-  "JOB_STATE_FAILED",
-  "JOB_STATE_CANCELLED",
-  "JOB_STATE_EXPIRED",
-  "JOB_STATE_PARTIALLY_SUCCEEDED",
-]);
+const JSON_HEADERS = { "Content-Type": "application/json" };
 
 const VIDEO_PROMPT = `Role: You are a no-nonsense Content Analyst extracting what a specific named person says in a YouTube video.
 
@@ -59,7 +64,30 @@ export function normalisePerson(name) {
   return name.trim().toLowerCase().replace(/\s+/g, " ");
 }
 
-const JSON_HEADERS = { "Content-Type": "application/json" };
+// ── small async utilities ────────────────────────────────────────────────────
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Reject with a retryable "timed out" error if `promise` does not settle in time.
+function withTimeout(promise, ms) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`generateContent timed out after ${ms}ms`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+async function selfInvoke(payload) {
+  await lambda.send(new InvokeCommand({
+    FunctionName: SELF_FUNCTION_NAME,
+    InvocationType: "Event",
+    Payload: Buffer.from(JSON.stringify(payload)),
+  }));
+}
+
+// ── DynamoDB helpers ─────────────────────────────────────────────────────────
 
 async function loadPerson(person) {
   const res = await ddb.send(new GetCommand({ TableName: PEOPLE_TABLE, Key: { person } }));
@@ -74,48 +102,6 @@ async function loadPersonVideos(person) {
     ExpressionAttributeValues: { ":p": person },
   }));
   return res.Items || [];
-}
-
-export async function researchPerson(displayName, model, { force = false } = {}) {
-  const person = normalisePerson(displayName);
-  if (!person) {
-    return { statusCode: 400, headers: JSON_HEADERS, body: JSON.stringify({ error: "person name required" }) };
-  }
-
-  const existing = await loadPerson(person);
-  const busy = existing && (existing.status === "running" || existing.status === "batch_pending" || existing.status === "queued");
-  if (busy && !force) {
-    return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ person, status: existing.status, alreadyRunning: true }) };
-  }
-
-  await ddb.send(new PutCommand({
-    TableName: PEOPLE_TABLE,
-    Item: {
-      person,
-      displayName,
-      status: "queued",
-      progress: { current: 0, total: 0 },
-      queuedAt: Date.now(),
-      model: model || null,
-    },
-  }));
-
-  await lambda.send(new InvokeCommand({
-    FunctionName: SELF_FUNCTION_NAME,
-    InvocationType: "Event",
-    Payload: Buffer.from(JSON.stringify({
-      __personJob: true,
-      person,
-      displayName,
-      model: model || null,
-    })),
-  }));
-
-  return {
-    statusCode: 202,
-    headers: JSON_HEADERS,
-    body: JSON.stringify({ person, status: "queued" }),
-  };
 }
 
 async function updatePerson(person, attrs) {
@@ -136,132 +122,104 @@ async function updatePerson(person, attrs) {
   }));
 }
 
-function buildInlinedRequest(video, displayName) {
-  const videoId = video.videoId || extractVideoId(video.url);
+async function updateVideoRow(person, videoId, attrs) {
+  const names = {};
+  const values = {};
+  const sets = [];
+  for (const [k, v] of Object.entries(attrs)) {
+    names[`#${k}`] = k;
+    values[`:${k}`] = v;
+    sets.push(`#${k} = :${k}`);
+  }
+  await ddb.send(new UpdateCommand({
+    TableName: PEOPLE_VIDEOS_TABLE,
+    Key: { person, videoId },
+    UpdateExpression: `SET ${sets.join(", ")}`,
+    ExpressionAttributeNames: names,
+    ExpressionAttributeValues: values,
+  }));
+}
+
+// ── request entry point ──────────────────────────────────────────────────────
+
+export async function researchPerson(displayName, model, { force = false } = {}) {
+  const person = normalisePerson(displayName);
+  if (!person) {
+    return { statusCode: 400, headers: JSON_HEADERS, body: JSON.stringify({ error: "person name required" }) };
+  }
+
+  const existing = await loadPerson(person);
+  const busy = existing && ["queued", "running", "finalising"].includes(existing.status);
+  if (busy && !force) {
+    return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ person, status: existing.status, alreadyRunning: true }) };
+  }
+
+  const now = Date.now();
+  await ddb.send(new PutCommand({
+    TableName: PEOPLE_TABLE,
+    Item: {
+      person,
+      displayName,
+      status: "queued",
+      progress: { current: 0, total: 0, phase: "queued" },
+      continuationCount: 0,
+      queuedAt: now,
+      lastProgressAt: now,
+      model: model || null,
+    },
+  }));
+
+  await selfInvoke({ __personJob: true, person });
+
   return {
-    contents: [{
-      parts: [
-        { fileData: { fileUri: video.url } },
-        { text: `Speaker to focus on: ${displayName}\nVideo URL: ${video.url}\nVideo ID: ${videoId}\n\n${VIDEO_PROMPT}` },
-      ],
-    }],
+    statusCode: 202,
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ person, status: "queued" }),
   };
 }
 
-export async function runPersonJob({ person, displayName, model }) {
-  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY, apiVersion: "v1beta" });
-  const chosenModel = model || DEFAULT_MODEL;
+// ── per-video summarisation ──────────────────────────────────────────────────
 
-  try {
-    await updatePerson(person, {
-      status: "running",
-      progress: { current: 0, total: 0, phase: "searching" },
-      startedAt: Date.now(),
-    });
+function buildVideoContents(video, displayName) {
+  const videoId = video.videoId || extractVideoId(video.url);
+  return [{
+    parts: [
+      { fileData: { fileUri: video.url } },
+      { text: `Speaker to focus on: ${displayName}\nVideo URL: ${video.url}\nVideo ID: ${videoId}\n\n${VIDEO_PROMPT}` },
+    ],
+  }];
+}
 
-    const candidates = await searchVideosByPerson(displayName, { max: MAX_VIDEOS, months: 6 });
-    const existing = await loadPersonVideos(person);
-    const doneIds = new Set(existing.filter(v => v.status === "done" && v.markdown).map(v => v.videoId));
-
-    const fromSearch = candidates.filter(c => !doneIds.has(c.videoId));
-    const searchIds = new Set(fromSearch.map(c => c.videoId));
-    const retryStale = existing
-      .filter(v => !doneIds.has(v.videoId) && !searchIds.has(v.videoId) && v.url)
-      .map(v => ({
-        videoId: v.videoId,
-        url: v.url,
-        title: v.title || "",
-        channelTitle: v.channelTitle || "",
-        publishedAt: v.publishedAt || "",
-      }));
-
-    const fresh = [...fromSearch, ...retryStale].slice(0, MAX_VIDEOS);
-
-    if (fresh.length === 0) {
-      await finalisePerson(ai, chosenModel, person, displayName);
-      return;
+// Summarise one video, walking the model chain; each model retried with backoff
+// on a retryable error. Returns { markdown, model }. Throws when all exhausted.
+async function summariseVideo(ai, video, displayName, modelChain) {
+  const contents = buildVideoContents(video, displayName);
+  let lastErr;
+  for (const model of modelChain) {
+    for (let attempt = 0; attempt < MAX_RETRIES_PER_MODEL; attempt++) {
+      try {
+        const response = await withTimeout(
+          ai.models.generateContent({ model, contents }),
+          VIDEO_CALL_TIMEOUT_MS,
+        );
+        const markdown = response.text
+          || response.candidates?.[0]?.content?.parts?.map((p) => p.text).filter(Boolean).join("\n")
+          || "";
+        if (!markdown) throw new Error("empty response");
+        return { markdown, model };
+      } catch (err) {
+        lastErr = err;
+        if (!isRetryableModelError(err)) break;
+        if (attempt < MAX_RETRIES_PER_MODEL - 1) {
+          await sleep(backoffDelayMs(attempt) + Math.floor(Math.random() * 1000));
+        }
+      }
     }
-
-    const metaMap = await getVideoMetadata(fresh.map(c => c.videoId));
-
-    for (const v of fresh) {
-      const m = metaMap[v.videoId] || {};
-      await ddb.send(new PutCommand({
-        TableName: PEOPLE_VIDEOS_TABLE,
-        Item: {
-          person,
-          videoId: v.videoId,
-          url: v.url,
-          title: v.title,
-          channelTitle: v.channelTitle,
-          publishedAt: v.publishedAt,
-          durationSeconds: m.durationSeconds || 0,
-          viewCount: m.viewCount || 0,
-          markdown: "",
-          model: chosenModel,
-          status: "batch_pending",
-          queuedAt: Date.now(),
-        },
-      }));
-    }
-
-    const inlinedRequests = fresh.map(v => buildInlinedRequest(v, displayName));
-    const batchKeys = fresh.map(v => v.videoId);
-
-    const { batch, modelUsed } = await submitBatchWithFallback(ai, chosenModel, inlinedRequests, person);
-
-    await updatePerson(person, {
-      status: "batch_pending",
-      progress: { current: 0, total: fresh.length, phase: "batch_pending" },
-      batchName: batch.name,
-      batchKeys,
-      batchSubmittedAt: Date.now(),
-      model: modelUsed,
-    });
-  } catch (err) {
-    console.error("person job submit failed", err);
-    await updatePerson(person, {
-      status: "error",
-      errorMessage: String(err?.message || err),
-    });
   }
+  throw lastErr || new Error("summariseVideo: all models exhausted");
 }
 
-const FALLBACK_MODEL = "models/gemini-2.5-flash";
-
-async function submitBatchWithFallback(ai, model, inlinedRequests, person) {
-  try {
-    const batch = await ai.batches.create({
-      model,
-      src: inlinedRequests,
-      config: { displayName: `yt2txt-${person}-${Date.now()}` },
-    });
-    return { batch, modelUsed: model };
-  } catch (err) {
-    if (model !== FALLBACK_MODEL && isRetryableModelError(err)) {
-      console.warn(`batch submit failed on ${model} (${err?.status || ''} ${err?.message || ''}), falling back to ${FALLBACK_MODEL}`);
-      const batch = await ai.batches.create({
-        model: FALLBACK_MODEL,
-        src: inlinedRequests,
-        config: { displayName: `yt2txt-${person}-${Date.now()}-fallback` },
-      });
-      return { batch, modelUsed: FALLBACK_MODEL };
-    }
-    throw err;
-  }
-}
-
-function isRetryableModelError(err) {
-  const status = err?.status ?? err?.response?.status;
-  if (status === 429 || status === 503 || status === 500) return true;
-  const msg = String(err?.message || "").toLowerCase();
-  return msg.includes("resource_exhausted")
-    || msg.includes("quota")
-    || msg.includes("rate limit")
-    || msg.includes("unavailable")
-    || msg.includes("overloaded")
-    || msg.includes("high demand");
-}
+// ── meta synthesis ───────────────────────────────────────────────────────────
 
 async function callMeta(ai, model, displayName, context) {
   const response = await ai.models.generateContent({
@@ -273,152 +231,237 @@ async function callMeta(ai, model, displayName, context) {
       ],
     }],
   });
-
   const raw = response.text || "";
   const jsonMatch = raw.match(/\{[\s\S]*\}/);
   if (!jsonMatch) throw new Error("meta response did not contain JSON");
   return JSON.parse(jsonMatch[0]);
 }
 
-async function generateMeta(ai, model, displayName, videos) {
-  const context = videos.map(v =>
+// Walk the model chain once; the first model to return parseable JSON wins.
+async function generateMeta(ai, modelChain, displayName, videos) {
+  const context = videos.map((v) =>
     `--- Video: ${v.title} (${v.url}) videoId=${v.videoId} ---\n${v.markdown}\n`
   ).join("\n");
 
-  try {
-    return await callMeta(ai, model, displayName, context);
-  } catch (err) {
-    if (model !== FALLBACK_MODEL && isRetryableModelError(err)) {
-      console.warn(`meta-summary failed on ${model} (${err?.status || ''} ${err?.message || ''}), falling back to ${FALLBACK_MODEL}`);
-      return await callMeta(ai, FALLBACK_MODEL, displayName, context);
+  let lastErr;
+  for (const model of modelChain) {
+    try {
+      return await callMeta(ai, model, displayName, context);
+    } catch (err) {
+      lastErr = err;
+      console.warn(`meta-summary failed on ${model}: ${err?.message || err}`);
     }
-    throw err;
+  }
+  throw lastErr || new Error("generateMeta: all models exhausted");
+}
+
+// ── job phases ───────────────────────────────────────────────────────────────
+
+// Search YouTube and write fresh `pending` video rows. Done-with-markdown rows
+// are kept; every other existing row is reset to `pending` for a retry.
+async function searchAndQueueVideos(person, displayName) {
+  await updatePerson(person, {
+    status: "running",
+    startedAt: Date.now(),
+    progress: { phase: "searching", current: 0, total: 0 },
+    lastProgressAt: Date.now(),
+  });
+
+  const candidates = await searchVideosByPerson(displayName, { max: MAX_VIDEOS, months: 6 });
+  const existing = await loadPersonVideos(person);
+  const doneIds = new Set(existing.filter((v) => v.status === "done" && v.markdown).map((v) => v.videoId));
+
+  const fromSearch = candidates.filter((c) => !doneIds.has(c.videoId));
+  const searchIds = new Set(fromSearch.map((c) => c.videoId));
+  const retryStale = existing
+    .filter((v) => !doneIds.has(v.videoId) && !searchIds.has(v.videoId) && v.url)
+    .map((v) => ({
+      videoId: v.videoId,
+      url: v.url,
+      title: v.title || "",
+      channelTitle: v.channelTitle || "",
+      publishedAt: v.publishedAt || "",
+    }));
+
+  const fresh = [...fromSearch, ...retryStale].slice(0, MAX_VIDEOS);
+  if (fresh.length === 0) return;
+
+  const metaMap = await getVideoMetadata(fresh.map((c) => c.videoId));
+
+  for (const v of fresh) {
+    const m = metaMap[v.videoId] || {};
+    await ddb.send(new PutCommand({
+      TableName: PEOPLE_VIDEOS_TABLE,
+      Item: {
+        person,
+        videoId: v.videoId,
+        url: v.url,
+        title: v.title,
+        channelTitle: v.channelTitle,
+        publishedAt: v.publishedAt,
+        durationSeconds: m.durationSeconds || 0,
+        viewCount: m.viewCount || 0,
+        markdown: "",
+        model: null,
+        status: "pending",
+        queuedAt: Date.now(),
+      },
+    }));
   }
 }
 
-async function finalisePerson(ai, model, person, displayName) {
+// Run the meta-summary and mark the person done. A meta failure is non-fatal:
+// the person is still marked done, with an empty meta and a metaError note.
+async function finalisePerson(ai, modelChain, person, displayName) {
   await updatePerson(person, {
     status: "finalising",
-    progress: { phase: "meta" },
+    progress: { phase: "finalising" },
+    lastProgressAt: Date.now(),
   });
 
-  const allVideos = (await loadPersonVideos(person)).filter(v => v.markdown);
-  let metaResult = { markdown: "", bestVideoId: null, bestVideoReason: "" };
-  if (allVideos.length > 0) {
-    metaResult = await generateMeta(ai, model, displayName, allVideos);
+  const summarised = (await loadPersonVideos(person)).filter((v) => v.markdown);
+  let meta = { markdown: "", bestVideoId: null, bestVideoReason: "" };
+  let metaError = null;
+
+  if (summarised.length > 0) {
+    try {
+      meta = await generateMeta(ai, modelChain, displayName, summarised);
+    } catch (err) {
+      console.error("generateMeta failed", person, err);
+      metaError = String(err?.message || err).slice(0, 500);
+    }
   }
 
   await updatePerson(person, {
     status: "done",
-    meta: metaResult,
+    meta,
+    metaError,
     lastRunAt: Date.now(),
-    progress: { current: allVideos.length, total: allVideos.length, phase: "done" },
+    lastProgressAt: Date.now(),
+    progress: { phase: "done", current: summarised.length, total: summarised.length },
   });
 }
 
-async function handleBatchResult(ai, personRow, batch) {
-  const { person, displayName, model, batchKeys = [] } = personRow;
-  const chosenModel = model || DEFAULT_MODEL;
+// ── the worker ───────────────────────────────────────────────────────────────
 
-  const responses = batch?.dest?.inlinedResponses || [];
-  let successes = 0;
-  let failures = 0;
+// Idempotent and resumable. Called by one of three triggers: the initial
+// research request, a self-invoked continuation, or the safety-net resumer.
+// `allowedModels` is a string[] of model values; `context` is the Lambda
+// context object (used for remaining-time checks).
+export async function runPersonJob(person, allowedModels = [], context) {
+  const remaining = () => (context?.getRemainingTimeInMillis?.() ?? Number.MAX_SAFE_INTEGER);
 
-  for (let i = 0; i < batchKeys.length; i++) {
-    const videoId = batchKeys[i];
-    const entry = responses[i];
-    if (!entry) {
-      failures++;
-      continue;
+  try {
+    const personRow = await loadPerson(person);
+    if (!personRow) {
+      console.warn(`runPersonJob: no row for "${person}"`);
+      return;
     }
-    if (entry.error) {
-      failures++;
-      await ddb.send(new UpdateCommand({
-        TableName: PEOPLE_VIDEOS_TABLE,
-        Key: { person, videoId },
-        UpdateExpression: "SET #s = :s, errorMessage = :e",
-        ExpressionAttributeNames: { "#s": "status" },
-        ExpressionAttributeValues: {
-          ":s": "error",
-          ":e": String(entry.error?.message || entry.error?.code || "batch error"),
-        },
-      }));
-      continue;
+    if (personRow.status === "done" || personRow.status === "error") {
+      return; // already finished — a stale continuation/resume
     }
-    const markdown = entry.response?.text
-      || entry.response?.candidates?.[0]?.content?.parts?.map(p => p.text).filter(Boolean).join("\n")
-      || "";
-    if (!markdown) {
-      failures++;
-      await ddb.send(new UpdateCommand({
-        TableName: PEOPLE_VIDEOS_TABLE,
-        Key: { person, videoId },
-        UpdateExpression: "SET #s = :s, errorMessage = :e",
-        ExpressionAttributeNames: { "#s": "status" },
-        ExpressionAttributeValues: { ":s": "error", ":e": "empty response" },
-      }));
-      continue;
+
+    // continuation budget guard
+    const continuationCount = (personRow.continuationCount || 0) + 1;
+    if (continuationCount > MAX_CONTINUATIONS) {
+      await updatePerson(person, {
+        status: "error",
+        errorMessage: "exceeded continuation budget",
+        lastProgressAt: Date.now(),
+      });
+      return;
     }
-    successes++;
-    await ddb.send(new UpdateCommand({
-      TableName: PEOPLE_VIDEOS_TABLE,
-      Key: { person, videoId },
-      UpdateExpression: "SET markdown = :m, #s = :s, summarisedAt = :t",
-      ExpressionAttributeNames: { "#s": "status" },
-      ExpressionAttributeValues: {
-        ":m": markdown,
-        ":s": "done",
-        ":t": Date.now(),
-      },
-    }));
+    await updatePerson(person, { continuationCount, lastProgressAt: Date.now() });
+
+    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY, apiVersion: "v1beta" });
+    const displayName = personRow.displayName || person;
+    const modelChain = buildModelChain(personRow.model || DEFAULT_MODEL, allowedModels);
+
+    // search phase — only on the first invocation
+    if (personRow.status === "queued") {
+      await searchAndQueueVideos(person, displayName);
+    }
+
+    // summarise phase
+    const videos = await loadPersonVideos(person);
+    const total = videos.length;
+    let doneCount = videos.filter((v) => v.status === "done" && v.markdown).length;
+    let failures = videos.filter((v) => v.status === "error").length;
+
+    for (const video of pickPendingVideos(videos)) {
+      if (!canStartVideo(remaining())) {
+        await updatePerson(person, {
+          progress: { phase: "summarising", current: doneCount, total, failures },
+          lastProgressAt: Date.now(),
+        });
+        await selfInvoke({ __personJob: true, person });
+        return;
+      }
+      await updatePerson(person, {
+        progress: { phase: "summarising", current: doneCount, total, failures, currentTitle: video.title || "" },
+        lastProgressAt: Date.now(),
+      });
+      try {
+        const { markdown, model } = await summariseVideo(ai, video, displayName, modelChain);
+        await updateVideoRow(person, video.videoId, {
+          status: "done", markdown, model, summarisedAt: Date.now(),
+        });
+        doneCount++;
+      } catch (err) {
+        console.error(`summariseVideo failed: ${person}/${video.videoId}`, err);
+        await updateVideoRow(person, video.videoId, {
+          status: "error",
+          errorMessage: String(err?.message || err).slice(0, 500),
+        });
+        failures++;
+      }
+      await updatePerson(person, {
+        progress: { phase: "summarising", current: doneCount, total, failures },
+        lastProgressAt: Date.now(),
+      });
+    }
+
+    // finalise phase
+    if (!canStartMeta(remaining())) {
+      await updatePerson(person, { lastProgressAt: Date.now() });
+      await selfInvoke({ __personJob: true, person });
+      return;
+    }
+    await finalisePerson(ai, modelChain, person, displayName);
+  } catch (err) {
+    console.error("runPersonJob failed", person, err);
+    await updatePerson(person, {
+      status: "error",
+      errorMessage: String(err?.message || err).slice(0, 500),
+      lastProgressAt: Date.now(),
+    });
   }
-
-  await updatePerson(person, {
-    progress: { current: successes, total: batchKeys.length, phase: "meta", failures },
-  });
-
-  await finalisePerson(ai, chosenModel, person, displayName);
 }
 
-export async function pollPendingBatches() {
+// ── safety-net resumer (EventBridge tick) ────────────────────────────────────
+
+// Scans for active jobs idle past the stall threshold and self-invokes a
+// continuation for each. Recovers jobs whose Lambda was killed mid-run.
+export async function resumeStalledJobs() {
   const res = await ddb.send(new ScanCommand({
     TableName: PEOPLE_TABLE,
-    FilterExpression: "#s = :s",
+    FilterExpression: "#s IN (:q, :r, :f)",
     ExpressionAttributeNames: { "#s": "status" },
-    ExpressionAttributeValues: { ":s": "batch_pending" },
+    ExpressionAttributeValues: { ":q": "queued", ":r": "running", ":f": "finalising" },
   }));
   const rows = res.Items || [];
-  if (rows.length === 0) return { polled: 0, completed: 0 };
-
-  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY, apiVersion: "v1beta" });
-  let completed = 0;
-
+  const now = Date.now();
+  let resumed = 0;
   for (const row of rows) {
-    if (!row.batchName) continue;
-    try {
-      const batch = await ai.batches.get({ name: row.batchName });
-      const state = batch?.state;
-      if (!state || !TERMINAL_STATES.has(state)) {
-        await updatePerson(row.person, { lastPolledAt: Date.now() });
-        continue;
-      }
-      if (state === "JOB_STATE_SUCCEEDED" || state === "JOB_STATE_PARTIALLY_SUCCEEDED") {
-        await handleBatchResult(ai, row, batch);
-        completed++;
-      } else {
-        await updatePerson(row.person, {
-          status: "error",
-          errorMessage: `batch ${state}: ${batch?.error?.message || "no detail"}`,
-        });
-      }
-    } catch (err) {
-      console.error("poll error for", row.person, err);
-      await updatePerson(row.person, { lastPolledAt: Date.now(), lastPollError: String(err?.message || err) });
-    }
+    if (!isStalled(row, now)) continue;
+    console.warn(`resuming stalled job: "${row.person}" (status=${row.status})`);
+    await selfInvoke({ __personJob: true, person: row.person });
+    resumed++;
   }
-
-  return { polled: rows.length, completed };
+  return { scanned: rows.length, resumed };
 }
+
+// ── read endpoints ───────────────────────────────────────────────────────────
 
 export async function getPerson(displayName) {
   const person = normalisePerson(displayName);
