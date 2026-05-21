@@ -163,22 +163,21 @@ aws.iam.RolePolicy(
     })),
 )
 
-# ── Batch-poll schedule ───────────────────────────────────────────────────────
-# Person research submits a Gemini Batch job and returns; this rule wakes the
-# Lambda every 3 min to poll for completion and write results. See people.js
-# `pollPendingBatches`. Short cadence is cheap — scan only filters by
-# status=batch_pending, and the batch itself is free to poll.
+# ── Person-job resumer schedule ───────────────────────────────────────────────
+# Person research runs synchronously and self-invokes its own continuations;
+# this rule is a safety net. It wakes the Lambda every 3 min so people.js
+# `resumeStalledJobs` can restart any job whose Lambda was killed mid-run.
 poll_rule = aws.cloudwatch.EventRule(
     "summarise-poll-rule",
     schedule_expression="rate(3 minutes)",
-    description="Poll Gemini batch jobs for yt2txt person research",
+    description="Resume stalled yt2txt person-research jobs",
 )
 
 aws.cloudwatch.EventTarget(
     "summarise-poll-target",
     rule=poll_rule.name,
     arn=summarise_fn.arn,
-    input=json.dumps({"__pollBatches": True}),
+    input=json.dumps({"__resumeJobs": True}),
 )
 
 aws.lambda_.Permission(
