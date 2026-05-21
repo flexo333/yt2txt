@@ -310,6 +310,7 @@ a:hover { color: var(--link-hover); }
 .nav-link {
   background: none;
   border: none;
+  text-decoration: none;
   font-family: var(--font-body);
   font-size: 0.88rem;
   font-weight: 500;
@@ -350,6 +351,8 @@ a:hover { color: var(--link-hover); }
   display: block;
   width: 100%;
   text-align: left;
+  text-decoration: none;
+  color: inherit;
   background: var(--surface);
   border: 1px solid var(--border-light);
   border-radius: 8px;
@@ -420,6 +423,8 @@ a:hover { color: var(--link-hover); }
   display: block;
   width: 100%;
   text-align: left;
+  text-decoration: none;
+  color: inherit;
   background: var(--surface);
   border: 1px solid var(--border-light);
   border-radius: 6px;
