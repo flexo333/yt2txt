@@ -199,6 +199,23 @@ url_permission = aws.lambda_.Permission(
     function_url_auth_type="NONE",
 )
 
+# Since October 2025 AWS requires *both* lambda:InvokeFunctionUrl and
+# lambda:InvokeFunction on the function's resource policy — a URL missing this
+# second statement returns 403 for every caller, even with auth type NONE.
+# Pre-Oct-2025 URLs are grandfathered, so this is latent until the URL is
+# recreated. `invoked_via_function_url=True` is load-bearing: without it,
+# principal="*" on lambda:InvokeFunction would grant the whole internet direct
+# Invoke API access, bypassing the function URL entirely. It is only valid with
+# the lambda:InvokeFunction action, hence a separate resource from the above.
+# https://docs.aws.amazon.com/lambda/latest/dg/urls-auth.html
+url_invoke_permission = aws.lambda_.Permission(
+    "summarise-url-invoke",
+    action="lambda:InvokeFunction",
+    function=summarise_fn.name,
+    principal="*",
+    invoked_via_function_url=True,
+)
+
 fn_url = aws.lambda_.FunctionUrl(
     "summarise-url",
     function_name=summarise_fn.name,
@@ -209,7 +226,7 @@ fn_url = aws.lambda_.FunctionUrl(
         allow_headers=["content-type", "x-yt2txt-key"],
         max_age=300,
     ),
-    opts=pulumi.ResourceOptions(depends_on=[url_permission]),
+    opts=pulumi.ResourceOptions(depends_on=[url_permission, url_invoke_permission]),
 )
 
 # ── Exports ───────────────────────────────────────────────────────────────────
