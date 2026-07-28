@@ -41,6 +41,18 @@ const FALLBACK_MODEL_OPTIONS = [
 // to pick one, and Flash Latest is the fast, cheap default.
 const SHARE_MODEL = PREFERRED_DEFAULT;
 
+// Desktop fallback for the share target. Web Share Target only exists on
+// Android, ChromeOS and Windows — on macOS/Linux an installed PWA can never
+// appear in a share menu. This bookmarklet drives the same /share route from
+// any desktop browser: it prefers selected text (so you can highlight a pasted
+// link anywhere) and falls back to the current tab's URL.
+const bookmarkletHref = (origin) =>
+  'javascript:(function(){'
+  + 'var s=window.getSelection?String(window.getSelection()).trim():"";'
+  + 'var u=/youtu\\.?be/i.test(s)?s:location.href;'
+  + `window.open(${JSON.stringify(origin)}+"/share?url="+encodeURIComponent(u),"_blank");`
+  + '})()';
+
 const KNOWN_PATHS = ['/', '/history', '/people', '/share'];
 
 // Extract a stable id from a stored YouTube URL (DynamoDB hash key is the full
@@ -77,6 +89,7 @@ const BrightBlogApp = () => {
   // Share-target flow: { status: 'working' | 'invalid' | 'error', url, message }
   const [share, setShare] = useState(null);
   const shareStarted = useRef(false);
+  const bookmarkletRef = useRef(null);
 
   const path = useLocation();
   const normalized = path.replace(/\/+$/, '') || '/';
@@ -200,6 +213,14 @@ const BrightBlogApp = () => {
     }
     runShare(shared);
   }, [page, runShare]);
+
+  // React refuses to render a javascript: href (it sanitises them), so the
+  // bookmarklet is attached to the DOM node directly once it exists.
+  useEffect(() => {
+    if (bookmarkletRef.current) {
+      bookmarkletRef.current.setAttribute('href', bookmarkletHref(window.location.origin));
+    }
+  }, [page]);
 
   const downloadMarkdown = (text) => {
     const blob = new Blob([text], { type: 'text/markdown' });
@@ -431,6 +452,29 @@ const BrightBlogApp = () => {
             {loading ? 'Analysing…' : 'Generate'}
           </button>
         </div>
+
+        <details className="desktop-share">
+          <summary>Summarise from your desktop browser</summary>
+          <p>
+            Sharing into an installed app only works on Android, ChromeOS and Windows —
+            macOS and Linux have no share menu for web apps. Drag this button to your
+            bookmarks bar instead, then click it on any YouTube page:
+          </p>
+          <a
+            ref={bookmarkletRef}
+            className="bookmarklet"
+            href="/"
+            draggable="true"
+            onClick={(e) => e.preventDefault()}
+            title="Drag me to your bookmarks bar"
+          >
+            ▸ Summarise this
+          </a>
+          <p className="desktop-share-note">
+            Clicking it here does nothing — it only works from the bookmarks bar. Highlight a
+            link first and it uses that instead of the current page.
+          </p>
+        </details>
 
         {history.length > 0 ? (
           <section className="history-section">
