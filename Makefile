@@ -23,6 +23,10 @@ install: ## Install npm dependencies
 build-lambda: ## Install Lambda npm deps into backend/summarise/node_modules/ (linux/amd64)
 	docker compose run --rm node-lambda npm install
 
+.PHONY: icons
+icons: ## Regenerate PWA icons in public/icons/ (run after editing public/yt2txt.svg)
+	docker compose run --rm node node scripts/generate-icons.mjs
+
 .PHONY: dev
 dev: ## Start Vite dev server → http://localhost:5173
 	docker compose run --rm --service-ports node npm run dev -- --host

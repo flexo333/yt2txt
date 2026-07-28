@@ -1,7 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import People from './pages/People.jsx';
 import { useLocation, navigate } from './useLocation.js';
+import { canonicalYoutubeUrl, shareTargetUrl } from './share.js';
 
 const LAMBDA_URL = import.meta.env.VITE_LAMBDA_URL;
 const YT2TXT_KEY = import.meta.env.VITE_YT2TXT_KEY || '';
@@ -36,7 +37,11 @@ const FALLBACK_MODEL_OPTIONS = [
   { label: 'Gemma 4 26B', value: 'models/gemma-4-26b-a4b-it' },
 ];
 
-const KNOWN_PATHS = ['/', '/history', '/people'];
+// Model used for links arriving via the PWA share target — that flow has no UI
+// to pick one, and Flash Latest is the fast, cheap default.
+const SHARE_MODEL = PREFERRED_DEFAULT;
+
+const KNOWN_PATHS = ['/', '/history', '/people', '/share'];
 
 // Extract a stable id from a stored YouTube URL (DynamoDB hash key is the full
 // url). Falls back to the raw url for unrecognised forms, so building a summary
@@ -69,6 +74,9 @@ const BrightBlogApp = () => {
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const [model, setModel] = useState(PREFERRED_DEFAULT);
   const [modelOptions, setModelOptions] = useState(FALLBACK_MODEL_OPTIONS);
+  // Share-target flow: { status: 'working' | 'invalid' | 'error', url, message }
+  const [share, setShare] = useState(null);
+  const shareStarted = useRef(false);
 
   const path = useLocation();
   const normalized = path.replace(/\/+$/, '') || '/';
@@ -78,6 +86,7 @@ const BrightBlogApp = () => {
   const page = summaryId ? 'history'
              : normalized === '/people' ? 'people'
              : normalized === '/history' ? 'history'
+             : normalized === '/share' ? 'share'
              : 'home';
 
   const detailItem = summaryId
@@ -115,19 +124,31 @@ const BrightBlogApp = () => {
     }
   }, [normalized, summaryId]);
 
+  // Single path to the Lambda, shared by the Generate button and the share
+  // target. Returns the new history item; throws on any non-2xx.
+  const requestSummary = async (targetUrl, targetModel) => {
+    const res = await fetch(LAMBDA_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ url: targetUrl, model: targetModel }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const { markdown, title, date, model: usedModel } = await res.json();
+    const item = { url: targetUrl, title, date, summary: markdown, model: usedModel };
+    // The Lambda dedupes on url, so an already-summarised video comes back
+    // cached — replace the existing row rather than adding a duplicate.
+    setHistory(prev => [item, ...prev.filter(h => h.url !== targetUrl)]);
+    return item;
+  };
+
   const generatePost = async () => {
     if (!url) return;
+    // Rewrite shorts/live/m. links into the form the Lambda accepts; leave
+    // anything unrecognised alone so the backend still owns validation.
+    const target = canonicalYoutubeUrl(url) || url;
     setLoading(true);
     try {
-      const res = await fetch(LAMBDA_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({ url, model }),
-      });
-      if (!res.ok) throw new Error(await res.text());
-      const { markdown, title, date, model: usedModel } = await res.json();
-      const item = { url, title, date, summary: markdown, model: usedModel };
-      setHistory(prev => [item, ...prev]);
+      const item = await requestSummary(target, model);
       navigate(summaryPath(item));
     } catch (error) {
       alert('Error generating summary. Check the URL and try again.');
@@ -136,6 +157,49 @@ const BrightBlogApp = () => {
       setLoading(false);
     }
   };
+
+  // ── Share target (/share?url=…&text=…&title=…) ────────────────────────────
+  // Registered in public/manifest.json. Android hands the shared link over as
+  // a GET navigation; summarise it with Flash Latest and land on the result.
+  const runShare = React.useCallback(async (targetUrl) => {
+    setShare({ status: 'working', url: targetUrl });
+    try {
+      const item = await requestSummary(targetUrl, SHARE_MODEL);
+      setShare(null);
+      // replace: Back from the summary should not re-run the share.
+      navigate(summaryPath(item), { replace: true });
+    } catch (error) {
+      console.error(error);
+      setShare({
+        status: 'error',
+        url: targetUrl,
+        message: navigator.onLine === false
+          ? 'You appear to be offline. Reconnect and try again.'
+          : 'Could not generate a summary for that link.',
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    if (page !== 'share' || shareStarted.current) return;
+    shareStarted.current = true;
+
+    const params = new URLSearchParams(window.location.search);
+    const shared = shareTargetUrl(params);
+    if (!shared) {
+      setShare({
+        status: 'invalid',
+        message: 'That share did not contain a YouTube link.',
+        raw: params.get('url') || params.get('text') || params.get('title') || '',
+      });
+      return;
+    }
+    if (!LAMBDA_URL) {
+      setShare({ status: 'error', url: shared, message: 'Backend URL is not configured.' });
+      return;
+    }
+    runShare(shared);
+  }, [page, runShare]);
 
   const downloadMarkdown = (text) => {
     const blob = new Blob([text], { type: 'text/markdown' });
@@ -229,6 +293,53 @@ const BrightBlogApp = () => {
               <a href="/history" onClick={(e) => linkClick(e, '/history')}>Back to History</a>
             </div>
           )}
+        </div>
+      </div>
+    );
+  }
+
+  // ── Share target landing (/share) ─────────────────────────────────────────
+  if (page === 'share') {
+    const working = !share || share.status === 'working';
+    return (
+      <div className="page-shell">
+        <div className="container">
+          <Header />
+          <div className="share-panel">
+            {working ? (
+              <>
+                <div className="share-spinner" aria-hidden="true" />
+                <h2>Summarising shared link…</h2>
+                {share?.url && <p className="share-url">{share.url}</p>}
+                <p className="share-note">
+                  Running through {modelLabel(SHARE_MODEL)}. This usually takes half a minute.
+                </p>
+              </>
+            ) : (
+              <>
+                <h2>{share.status === 'invalid' ? 'No YouTube link found' : 'Summary failed'}</h2>
+                <p className="share-note">{share.message}</p>
+                {share.url && <p className="share-url">{share.url}</p>}
+                {share.raw && <p className="share-url">{share.raw}</p>}
+                <div className="article-actions">
+                  {share.status === 'error' && (
+                    <button className="btn btn--primary" onClick={() => runShare(share.url)}>
+                      Try again
+                    </button>
+                  )}
+                  <button
+                    className="btn btn--secondary"
+                    onClick={() => {
+                      if (share.status === 'invalid' && share.raw) setUrl(share.raw);
+                      navigate('/');
+                    }}
+                  >
+                    Enter a link manually
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
         </div>
       </div>
     );
