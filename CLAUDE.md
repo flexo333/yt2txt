@@ -11,6 +11,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Everything runs via `docker compose` services invoked through the `Makefile` — you don't need Node or Python locally. `.env` is auto-loaded by `make` and forwarded into the Docker services.
 
 - `make install` — install frontend npm deps (via the `node` service)
+- `make icons` — regenerate `public/icons/*.png` from `scripts/generate-icons.mjs` (only needed if `public/yt2txt.svg` changes)
 - `make dev` — Vite dev server on `http://localhost:5173` (needs `VITE_LAMBDA_URL` in `.env` to hit a real Lambda)
 - `make build` — Vite production build into `dist/`
 - `make build-lambda` — install `backend/summarise/node_modules/` under `linux/amd64` so the deps work inside Lambda; **must run before any `infra-*` command that packages the Lambda**
@@ -25,6 +26,15 @@ There is no `make test` / `make lint` — don't invent one.
 Three layers, each with one source of truth:
 
 **Frontend (`src/`, `index.html`)** — single `App.jsx` component (no router, just `page` state). On mount it `GET`s `VITE_LAMBDA_URL` to hydrate history and `GET`s `?models=1` to populate the model dropdown; "Generate" `POST`s `{ url, model }`. The dropdown is populated dynamically — `FALLBACK_MODEL_OPTIONS` in `App.jsx` is only rendered if that fetch fails.
+
+**PWA (`public/manifest.json`, `public/sw.js`, `src/share.js`)** — installable app + Android share target:
+- `manifest.json` declares `display: standalone`, the icon set, shortcuts, and a **`share_target`** posting to `/share` via **GET** (no server round-trip needed — the SPA reads the query string). `launch_handler.client_mode: navigate-existing` reuses an already-open window.
+- `/share?url=&text=&title=` is a route in `App.jsx`. `shareTargetUrl()` scans `url` → `text` → `title` for the first YouTube link (Android apps put it in different fields and often wrap it in prose), then auto-summarises with `SHARE_MODEL` (= `models/gemini-flash-latest`) and `navigate(..., { replace: true })`s to the summary so Back doesn't re-fire the share.
+- `canonicalYoutubeUrl()` rewrites shorts/live/embed/`m.`/`music.` links into `https://www.youtube.com/watch?v=<id>` — the Lambda's `YOUTUBE_URL_RE` only accepts `watch?v=` and `youtu.be`, so a raw shorts link would 400. It also strips `?si=` share tracking so one video is one DynamoDB row. Applied to both the share flow and the manual Generate button.
+- `src/share.js` is dependency-free and pure; `node src/share.test.mjs` smoke-tests it (same convention as `people-pure.test.mjs`).
+- `public/sw.js` is hand-written — no `vite-plugin-pwa`, no precache manifest to keep in sync. Navigations are network-first with the cached `/` shell as the offline fallback; `/assets/*` (content-hashed) is cache-first; cross-origin requests (the Lambda) and all non-GETs are never intercepted. Bump `VERSION` in it to invalidate every client's cache.
+- Registered by `src/registerServiceWorker.js`, **production only** — in `make dev` a service worker would sit in front of Vite HMR.
+- iOS has no Web Share Target support; the `apple-*` meta tags in `index.html` still give a standalone home-screen app there.
 
 **Backend (`backend/summarise/handler.js`)** — one Lambda, one handler, dispatched by HTTP method:
 - `POST` → summarise + persist to DynamoDB. On a quota/rate-limit error the summariser falls back through the allowed-model list (chosen model + up to 3 more) and records on the item which model actually produced the summary.
@@ -66,7 +76,9 @@ Exported outputs (`bucket`, `distribution_id`, `api_url`, `lambda_function_name`
 - **Allowed-model list is dynamic**: `handler.js` derives it from `ai.models.list()` via `filterModels()` (Flash-family Gemini + Gemma), cached 24h. The same list backs both `?models=1` and `isAllowedModel()`, so the dropdown and the request allow-list cannot drift. To change which models appear, edit the `isWantedModel()` filter — not a hand-kept list. `FALLBACK_MODELS` (backend) and `FALLBACK_MODEL_OPTIONS` (frontend) are only used when the live fetch fails; keep them roughly current but they are not load-bearing.
 - **People research uses the synchronous Gemini API, not the Batch API**: the Batch API is paid-tier only and the project key is free tier — `ai.batches.create()` fails `400 FAILED_PRECONDITION`. `people.js` deliberately calls `ai.models.generateContent` per video. Do not "optimise" it back onto the Batch API without first enabling billing on the Gemini project.
 - **A stuck person job self-heals**: the `summarise-poll-rule` tick (`resumeStalledJobs`) resumes any job idle past the 10-min stall threshold. The `researchPerson` busy-guard blocks new runs while a person is `queued | running | finalising`; pass `force: true` to override.
-- **Client-side routing depends on `spa_mode`**: `App.jsx` uses the History API (`src/useLocation.js`) for `/`, `/history`, `/people`, and `/summary/<videoId>`. Refreshing a non-root path works only because `StaticSite(spa_mode=True)` maps CloudFront 403/404 → `index.html`, **and** Vite emits absolute asset paths. Never set `base: './'` in the Vite config — it would make assets resolve relative to the route and break every non-root URL.
+- **The manifest is `manifest.json`, not `manifest.webmanifest`**: `make deploy` uses `aws s3 sync`, which picks Content-Type from the file extension. `.webmanifest` is not in the AWS CLI's mime map and would be uploaded as `application/octet-stream`; `.json` gets `application/json`, which browsers accept for manifests. Don't rename it without adding an explicit `--content-type` sync step.
+- **`sw.js` must stay at the site root**: its scope is `/`, which a service worker can only claim from the root path. Vite copies `public/` verbatim, so it lands correctly — don't move it into `src/` or an assets folder.
+- **Client-side routing depends on `spa_mode`**: `App.jsx` uses the History API (`src/useLocation.js`) for `/`, `/history`, `/people`, `/share`, and `/summary/<videoId>`. `/share` in particular relies on CloudFront's 403/404 → `index.html` mapping preserving the query string. Refreshing a non-root path works only because `StaticSite(spa_mode=True)` maps CloudFront 403/404 → `index.html`, **and** Vite emits absolute asset paths. Never set `base: './'` in the Vite config — it would make assets resolve relative to the route and break every non-root URL.
 
 ## CI
 

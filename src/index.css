@@ -492,3 +492,56 @@ a:hover { color: var(--link-hover); }
 .history-card .model-tag {
   margin-top: 0.5rem;
 }
+
+/* ── Share target landing (/share) ───────────────────────────────────────── */
+.share-panel {
+  text-align: center;
+  padding: 3rem 1.25rem;
+  border: 1px solid var(--border-light);
+  background: var(--surface);
+  border-radius: 8px;
+}
+
+.share-panel h2 {
+  font-family: var(--font-display);
+  font-size: 1.25rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin-bottom: 0.6rem;
+}
+
+.share-url {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--muted);
+  word-break: break-all;
+  margin-bottom: 0.6rem;
+}
+
+.share-note {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.share-panel .article-actions {
+  justify-content: center;
+  margin-top: 1.5rem;
+}
+
+.share-spinner {
+  width: 28px;
+  height: 28px;
+  margin: 0 auto 1.25rem;
+  border: 3px solid var(--border);
+  border-top-color: var(--sage);
+  border-radius: 50%;
+  animation: share-spin 0.9s linear infinite;
+}
+
+@keyframes share-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .share-spinner { animation-duration: 3s; }
+}
