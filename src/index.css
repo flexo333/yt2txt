@@ -545,3 +545,57 @@ a:hover { color: var(--link-hover); }
 @media (prefers-reduced-motion: reduce) {
   .share-spinner { animation-duration: 3s; }
 }
+
+/* ── Desktop bookmarklet (Home) ──────────────────────────────────────────── */
+.desktop-share {
+  margin-top: 1.25rem;
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
+  padding: 0.75rem 1.25rem;
+  background: var(--bg);
+}
+
+.desktop-share summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.85rem;
+  list-style: none;
+}
+
+.desktop-share summary::-webkit-details-marker { display: none; }
+
+.desktop-share summary::before {
+  content: '▸ ';
+  color: var(--sage);
+}
+
+.desktop-share[open] summary::before { content: '▾ '; }
+
+.desktop-share[open] summary { margin-bottom: 0.9rem; }
+
+.desktop-share p {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin-bottom: 0.9rem;
+}
+
+.desktop-share-note {
+  font-style: italic;
+  margin-bottom: 0.25rem !important;
+}
+
+.bookmarklet {
+  display: inline-block;
+  background: var(--sage);
+  color: #fff;
+  border-radius: 6px;
+  padding: 0.5rem 1rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: grab;
+  margin-bottom: 0.9rem;
+}
+
+.bookmarklet:hover { background: var(--link-hover); color: #fff; }
+.bookmarklet:active { cursor: grabbing; }
