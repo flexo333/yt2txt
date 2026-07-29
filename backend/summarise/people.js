@@ -2,7 +2,8 @@ import { GoogleGenAI } from "@google/genai";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, PutCommand, QueryCommand, ScanCommand, GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
-import { searchVideosByPerson, getVideoMetadata, extractVideoId } from "./youtube.js";
+import { searchVideosByPerson, getVideoMetadata } from "./youtube.js";
+import { videoIdFrom } from "./youtube-url.js";
 import { DEFAULT_MODEL, MEDIA_RESOLUTION_LOW, fpsForDuration } from "./constants.js";
 import {
   MAX_VIDEOS,
@@ -168,7 +169,7 @@ export async function researchPerson(displayName, model, { force = false } = {})
 // ── per-video summarisation ──────────────────────────────────────────────────
 
 function buildVideoContents(video, displayName, fps) {
-  const videoId = video.videoId || extractVideoId(video.url);
+  const videoId = video.videoId || videoIdFrom(video.url);
   return [{
     parts: [
       { fileData: { fileUri: video.url }, videoMetadata: { fps } },

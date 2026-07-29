@@ -1,41 +1,23 @@
 // Smoke tests for the pure share-target helpers. Run with the node test runner:
 //   node --test
+//
+// The URL shapes themselves are covered once, in
+// backend/summarise/youtube-url.test.mjs — the module this one re-exports.
+// What is tested here is the share-sheet layer on top of it.
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { videoIdFrom, canonicalYoutubeUrl, findYoutubeUrl, shareTargetUrl } from './share.js';
+import * as shared from '../backend/summarise/youtube-url.js';
 
 const CANONICAL = 'https://www.youtube.com/watch?v=dQw4w9WgXcQ';
 
-test('videoIdFrom handles every YouTube URL shape', () => {
-  const id = 'dQw4w9WgXcQ';
-  assert.equal(videoIdFrom('https://www.youtube.com/watch?v=dQw4w9WgXcQ'), id);
-  assert.equal(videoIdFrom('https://youtube.com/watch?v=dQw4w9WgXcQ&list=PLabc'), id);
-  assert.equal(videoIdFrom('https://m.youtube.com/watch?v=dQw4w9WgXcQ'), id);
-  assert.equal(videoIdFrom('https://music.youtube.com/watch?v=dQw4w9WgXcQ'), id);
-  assert.equal(videoIdFrom('https://youtu.be/dQw4w9WgXcQ?si=trackingParam'), id);
-  assert.equal(videoIdFrom('https://www.youtube.com/shorts/dQw4w9WgXcQ'), id);
-  assert.equal(videoIdFrom('https://www.youtube.com/live/dQw4w9WgXcQ?feature=share'), id);
-  assert.equal(videoIdFrom('https://www.youtube.com/embed/dQw4w9WgXcQ'), id);
-  assert.equal(videoIdFrom('  youtu.be/dQw4w9WgXcQ  '), id);
-});
-
-test('videoIdFrom rejects non-YouTube and malformed input', () => {
-  assert.equal(videoIdFrom('https://vimeo.com/12345'), null);
-  assert.equal(videoIdFrom('https://notyoutube.com/watch?v=dQw4w9WgXcQ'), null);
-  assert.equal(videoIdFrom('https://www.youtube.com/watch?v=tooshort'), null);
-  assert.equal(videoIdFrom('https://www.youtube.com/@somechannel'), null);
-  assert.equal(videoIdFrom('javascript:alert(1)'), null);
-  assert.equal(videoIdFrom(''), null);
-  assert.equal(videoIdFrom(null), null);
-  assert.equal(videoIdFrom(undefined), null);
-  assert.equal(videoIdFrom(42), null);
-});
-
-test('canonicalYoutubeUrl normalises to the form the Lambda accepts', () => {
+test('share.js re-exports the shared canonicaliser, not a copy of it', () => {
+  // The frontend and the Lambda must canonicalise identically or one video
+  // ends up holding two DynamoDB rows again.
+  assert.equal(videoIdFrom, shared.videoIdFrom);
+  assert.equal(canonicalYoutubeUrl, shared.canonicalYoutubeUrl);
   assert.equal(canonicalYoutubeUrl('https://youtu.be/dQw4w9WgXcQ?si=abc'), CANONICAL);
-  assert.equal(canonicalYoutubeUrl('https://www.youtube.com/shorts/dQw4w9WgXcQ'), CANONICAL);
-  assert.equal(canonicalYoutubeUrl('https://vimeo.com/12345'), null);
 });
 
 test('findYoutubeUrl digs a link out of shared free text', () => {

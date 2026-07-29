@@ -2,24 +2,17 @@
 // them. Both the router (App.jsx) and every card that links into it go through
 // these, so a link and the route that resolves it can never disagree.
 
-// Extract a stable id from a stored YouTube URL (the DynamoDB hash key is the
-// full url). Falls back to the raw url for unrecognised forms, so building a
-// summary path and resolving it always use the same value.
-export const videoIdFromUrl = (raw) => {
-  try {
-    const u = new URL(raw);
-    if (u.hostname.endsWith('youtu.be')) return u.pathname.slice(1) || raw;
-    const v = u.searchParams.get('v');
-    if (v) return v;
-    const m = u.pathname.match(/\/(shorts|live|embed)\/([^/]+)/);
-    if (m) return m[2];
-    return raw;
-  } catch {
-    return raw;
-  }
-};
+import { videoIdFrom } from '../backend/summarise/youtube-url.js';
 
-export const summaryPath = (item) => `/summary/${encodeURIComponent(videoIdFromUrl(item.url))}`;
+// The /summary/<id> segment for a stored row. `videoIdFrom` is the shared
+// extractor — the same one the Lambda's `GET ?video=` lookup uses — so a link
+// built here resolves server-side too. Rows are keyed by their canonical URL,
+// so it only ever returns null for a legacy row whose url is not a recognisable
+// YouTube link; that falls back to the raw url, which is unaddressable either
+// way but at least keeps link-building and link-resolving in agreement.
+export const summaryIdFor = (url) => videoIdFrom(url) || url;
+
+export const summaryPath = (item) => `/summary/${encodeURIComponent(summaryIdFor(item.url))}`;
 
 // decodeURIComponent throws on a malformed % sequence — never crash the render.
 export const decodeId = (s) => {

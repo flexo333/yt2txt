@@ -1,9 +1,7 @@
+// YouTube Data API v3 calls. Video-id extraction is not here: it lives in
+// youtube-url.js, the pure module the frontend imports too, so there is exactly
+// one implementation of it in the repo.
 const YT_API = "https://www.googleapis.com/youtube/v3";
-
-export function extractVideoId(url) {
-  const match = String(url || "").match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([\w-]{11})/);
-  return match ? match[1] : null;
-}
 
 function monthsAgoISO(months) {
   const d = new Date();

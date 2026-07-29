@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useLocation, navigate } from './useLocation.js';
 import { canonicalYoutubeUrl, shareTargetUrl } from './share.js';
-import { summaryPath, videoIdFromUrl, decodeId } from './paths.js';
+import { summaryPath, summaryIdFor, decodeId } from './paths.js';
 import { hasBackend, listSummaries, listModels, createSummary } from './api.js';
 import Header from './components/Header.jsx';
 import Home from './pages/Home.jsx';
@@ -60,7 +60,7 @@ const BrightBlogApp = () => {
              : 'home';
 
   const detailItem = summaryId
-    ? history.find((h) => videoIdFromUrl(h.url) === summaryId) || null
+    ? history.find((h) => summaryIdFor(h.url) === summaryId) || null
     : null;
 
   useEffect(() => {
@@ -104,8 +104,10 @@ const BrightBlogApp = () => {
 
   const generatePost = async () => {
     if (!url) return;
-    // Rewrite shorts/live/m. links into the form the Lambda accepts; leave
-    // anything unrecognised alone so the backend still owns validation.
+    // Convenience only — the Lambda canonicalises with this very function
+    // before it reads or writes anything. Doing it here keeps the url we file
+    // the history row under identical to the one the backend stores, and leaves
+    // anything unrecognised alone so the backend still owns the rejection.
     const target = canonicalYoutubeUrl(url) || url;
     setLoading(true);
     setGenerateError(null);

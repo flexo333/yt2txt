@@ -138,6 +138,10 @@ aws.iam.RolePolicy(
                     "dynamodb:PutItem",
                     "dynamodb:GetItem",
                     "dynamodb:UpdateItem",
+                    # DeleteItem exists for one caller: the backfill's canonical
+                    # -key pass, which copies a row to its canonical url and then
+                    # removes the original. Nothing on the request path deletes.
+                    "dynamodb:DeleteItem",
                     "dynamodb:Scan",
                     "dynamodb:Query",
                 ],

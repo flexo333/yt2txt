@@ -2,7 +2,8 @@ import { GoogleGenAI } from "@google/genai";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, PutCommand, QueryCommand, ScanCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
 import { researchPerson, runPersonJob, getPerson, listPeople, resumeStalledJobs } from "./people.js";
-import { extractVideoId, getVideoMetadata } from "./youtube.js";
+import { getVideoMetadata } from "./youtube.js";
+import { canonicalUrlForId, canonicalYoutubeUrl, isVideoId, videoIdFrom } from "./youtube-url.js";
 import { normaliseSpeakers, parseSpeakerTrailer, stripSpeakerTrailer } from "./tags.js";
 import { extractSpeakersFromMarkdown } from "./speakers.js";
 import { runBackfill } from "./backfill.js";
@@ -34,8 +35,6 @@ Tone: Clear, direct, and brief. Use plain Markdown. No fancy jargon.`;
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TABLE = process.env.DYNAMODB_TABLE;
 const SHARED_SECRET = process.env.SHARED_SECRET || "";
-
-const YOUTUBE_URL_RE = /^https:\/\/(www\.)?(youtube\.com\/watch\?v=[\w-]{11}|youtu\.be\/[\w-]{11})(\S*)?$/;
 
 const MODEL_CACHE_SUCCESS_TTL_MS = 24 * 60 * 60 * 1000;
 const MODEL_CACHE_FALLBACK_TTL_MS = 5 * 60 * 1000;
@@ -180,6 +179,9 @@ function summaryPayload(item, url, extra = {}) {
   };
 }
 
+// `url` is always canonical here — the POST handler rewrites it before calling,
+// so the dedupe GetItem, the item build and the race re-read below all address
+// the one row this video can have.
 async function summarise(url, requestedModel = DEFAULT_MODEL) {
   const existing = await ddb.send(new GetCommand({ TableName: TABLE, Key: { url } }));
   if (existing.Item) {
@@ -191,7 +193,7 @@ async function summarise(url, requestedModel = DEFAULT_MODEL) {
   }
 
   const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY, apiVersion: "v1beta" });
-  const videoId = extractVideoId(url);
+  const videoId = videoIdFrom(url);
   const promptText = `${SYSTEM_PROMPT}\n\nVideo URL: ${url}\nVideo ID: ${videoId}`;
   const allowedModels = await getAllowedModels();
   const chain = buildModelChain(requestedModel, allowedModels.map((m) => m.value));
@@ -385,19 +387,19 @@ async function listSummaries() {
   };
 }
 
-const VIDEO_ID_RE = /^[\w-]{11}$/;
-
-// The table is keyed by the raw URL the user submitted, so a video id is not a
-// key — but the canonical watch URL is what the frontend and the share flow
-// send, so it is worth one GetItem before falling back to a full Scan.
+// The POST handler canonicalises before it writes, so every row written since
+// is keyed by exactly this URL and the GetItem is the answer.
 async function findByVideoId(id) {
-  const canonical = `https://www.youtube.com/watch?v=${id}`;
-  const direct = await ddb.send(new GetCommand({ TableName: TABLE, Key: { url: canonical } }));
+  const direct = await ddb.send(new GetCommand({ TableName: TABLE, Key: { url: canonicalUrlForId(id) } }));
   if (direct.Item) return direct.Item;
 
-  // `youtu.be/<id>`, tracking-parameter suffixes, anything else that stored a
-  // different URL for the same video. `contains` narrows server-side; the
-  // authoritative match is extractVideoId, which is what built the link.
+  // ── legacy fallback, deletable ─────────────────────────────────────────────
+  // Rows written before the canonicalisation change can still sit under
+  // `youtu.be/<id>` or a tracking-parameter suffix. `contains` narrows
+  // server-side; the authoritative match is videoIdFrom, which is what built
+  // the link. DELETE this Scan once the backfill's canonical-URL pass reports
+  // `nonCanonicalRemaining: 0` on a completed (`done: true`) run — at that
+  // point no row exists that the GetItem above cannot find.
   let startKey;
   do {
     const page = await ddb.send(new ScanCommand({
@@ -407,7 +409,7 @@ async function findByVideoId(id) {
       ExpressionAttributeValues: { ":id": id },
       ...(startKey ? { ExclusiveStartKey: startKey } : {}),
     }));
-    const match = (page.Items || []).find((row) => extractVideoId(row.url) === id);
+    const match = (page.Items || []).find((row) => videoIdFrom(row.url) === id);
     if (match) return match;
     startKey = page.LastEvaluatedKey;
   } while (startKey);
@@ -418,7 +420,7 @@ async function findByVideoId(id) {
 // GET ?video=<id> → one full summary. This is what makes /summary/<videoId>
 // permalinks outlive the newest-50 window the list response covers.
 async function getSummaryByVideo(id) {
-  if (!VIDEO_ID_RE.test(id)) {
+  if (!isVideoId(id)) {
     return {
       statusCode: 400,
       headers: JSON_HEADERS,
@@ -493,7 +495,15 @@ export async function handler(event, context) {
         }
         return await researchPerson(body.person, model, { force: !!body.force });
       }
-      if (!body.url || typeof body.url !== "string" || !YOUTUBE_URL_RE.test(body.url)) {
+      // Canonicalise before anything reads or writes. The table is keyed by
+      // `url`, so `youtu.be/<id>` and `watch?v=<id>&si=…` used to open two rows
+      // for one video; every path below sees the same
+      // `https://www.youtube.com/watch?v=<id>` instead. This is also the
+      // validation — no extractable video id, no request — which is why it
+      // replaced the old YOUTUBE_URL_RE: it accepts strictly more link shapes
+      // (shorts, live, embed, m./music.) and emits strictly one of them.
+      const url = canonicalYoutubeUrl(body.url);
+      if (!url) {
         return {
           statusCode: 400,
           headers: JSON_HEADERS,
@@ -508,7 +518,7 @@ export async function handler(event, context) {
           body: JSON.stringify({ error: "model not supported" }),
         };
       }
-      return await summarise(body.url, model);
+      return await summarise(url, model);
     }
 
     if (method === "GET") {
