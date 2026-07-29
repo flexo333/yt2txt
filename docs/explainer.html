@@ -795,7 +795,17 @@
             orphaned files into a gate:
           </p>
 <pre><code>test:  ## Run pure-module smoke tests
-	docker compose run --rm node node --test src/ backend/summarise/</code></pre>
+	docker compose run --rm node node --test</code></pre>
+          <p>
+            Pass no paths. Bare <code>node --test</code> walks the working directory recursively,
+            picks up anything matching <code>*.test.mjs</code>, and skips
+            <code>node_modules</code> on its own — which is what finds all four files across
+            <code>src/</code> and <code>backend/summarise/</code> in one run. Naming the two
+            directories as arguments does <em>not</em> do this: the runner treats each path as a
+            test module and tries to import it, so both fail and nothing runs. Explicit globs
+            (<code>src/*.test.mjs backend/summarise/*.test.mjs</code>) work too, at the cost of
+            needing an edit every time a file lands somewhere new.
+          </p>
           <p>
             Convert the <code>check()</code> calls to <code>test()</code> from
             <code>node:test</code> — the assertions are already <code>node:assert/strict</code>,
@@ -844,7 +854,22 @@
 })</code></pre>
           <p>
             A single hot partition is entirely fine at this scale, and the write path already
-            builds the item in one place, so stamping the constant is a one-line change.
+            builds the item in one place, so stamping the constant on new writes is a one-line
+            change.
+          </p>
+          <p>
+            <strong>Backfill before you cut over.</strong> A GSI is sparse: items missing its
+            partition key are simply absent from the index. Every existing row predates the
+            attribute, so a Query against the fresh index returns only rows written after the
+            deploy — History would read as empty and then refill one summary at a time, which
+            looks far worse than the bug being fixed. Stamp the attribute on writes first, run a
+            one-shot pass over the table to add it to existing rows, confirm the index item count
+            has caught up, and only then point <code>listSummaries()</code> at the Query. If you
+            would rather not gate the cutover on the backfill, dual-read for one deploy: Query the
+            index, and fall back to the current Scan when it returns fewer than expected.
+            <code>backfill.js</code> is a working template for the one-shot pass.
+          </p>
+          <p>
             <code>listPeople()</code> and <code>resumeStalledJobs()</code> also Scan — those
             tables stay small enough that it is defensible, but they deserve a comment saying so.
           </p>
@@ -1253,8 +1278,9 @@ aws s3 sync dist/ s3://$BUCKET --delete \
         <p>
           Proposal 01 first — it is an hour, and it is what makes 02 through 07 verifiable rather
           than hopeful. Then 02 and 03 together, since they touch the same two functions and
-          together fix both "new summaries sometimes vanish" and "old permalinks die". 04, 06 and
-          09 are independent and can go in any order or any spare afternoon. Leave 07 and 08 until
+          together fix both "new summaries sometimes vanish" and "old permalinks die" — budget for
+          02's backfill, which is the part that decides when the cutover is safe. 04, 06 and 09
+          are independent and can go in any order or any spare afternoon. Leave 07 and 08 until
           the first three have settled; both involve migrations, and neither is urgent.
         </p>
       </div>
