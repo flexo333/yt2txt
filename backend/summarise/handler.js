@@ -107,9 +107,7 @@ async function getAllowedModels() {
   return list;
 }
 
-// Kept low deliberately: every fallback attempt re-sends the whole video, so a
-// long chain re-burns full video tokens exactly when quota is tightest.
-const MAX_MODEL_ATTEMPTS = 2;
+const MAX_MODEL_ATTEMPTS = 4;
 
 // Copy of people.js's predicate (kept separate so people.js's own fallback
 // stays untouched). True for errors where trying a different model may help.
