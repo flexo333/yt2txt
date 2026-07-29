@@ -1,0 +1,1295 @@
+<title>yt2txt — how it works, and what to clean up</title>
+<style>
+  :root {
+    --bg:          #fefdf8;
+    --surface:     #f5f2eb;
+    --surface-2:   #efeade;
+    --border:      #e0dbd0;
+    --hairline:    #ede9e0;
+    --text:        #1c1a16;
+    --muted:       #7a7468;
+    --accent:      #4a7c5f;
+    --accent-deep: #2f5c42;
+    --accent-pale: #eef5f1;
+    --rose:        #b06a6a;
+    --peach:       #a97645;
+    --lavender:    #7a6aa8;
+
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+
+    --measure: 68ch;
+    --step--2: 0.6875rem;
+    --step--1: 0.8125rem;
+    --step-0:  1.0625rem;
+    --step-1:  1.3125rem;
+    --step-2:  1.75rem;
+    --step-3:  2.375rem;
+    --step-4:  3.25rem;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:          #14130f;
+      --surface:     #1d1b16;
+      --surface-2:   #24211a;
+      --border:      #33302a;
+      --hairline:    #272420;
+      --text:        #ece7db;
+      --muted:       #9b9385;
+      --accent:      #8fba9f;
+      --accent-deep: #b0d3bd;
+      --accent-pale: #1e2a22;
+      --rose:        #d59a9a;
+      --peach:       #d0a271;
+      --lavender:    #a99ad0;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --bg:          #14130f;
+    --surface:     #1d1b16;
+    --surface-2:   #24211a;
+    --border:      #33302a;
+    --hairline:    #272420;
+    --text:        #ece7db;
+    --muted:       #9b9385;
+    --accent:      #8fba9f;
+    --accent-deep: #b0d3bd;
+    --accent-pale: #1e2a22;
+    --rose:        #d59a9a;
+    --peach:       #d0a271;
+    --lavender:    #a99ad0;
+  }
+
+  :root[data-theme="light"] {
+    --bg:          #fefdf8;
+    --surface:     #f5f2eb;
+    --surface-2:   #efeade;
+    --border:      #e0dbd0;
+    --hairline:    #ede9e0;
+    --text:        #1c1a16;
+    --muted:       #7a7468;
+    --accent:      #4a7c5f;
+    --accent-deep: #2f5c42;
+    --accent-pale: #eef5f1;
+    --rose:        #b06a6a;
+    --peach:       #a97645;
+    --lavender:    #7a6aa8;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: var(--step-0);
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .shell {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0;
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 0 1.5rem 8rem;
+  }
+
+  @media (min-width: 1100px) {
+    .shell {
+      grid-template-columns: 14rem minmax(0, 1fr);
+      column-gap: 4.5rem;
+      padding-right: 3rem;
+    }
+  }
+
+  /* ── section index ─────────────────────────────────────────────────── */
+
+  .index { display: none; }
+
+  @media (min-width: 1100px) {
+    .index {
+      display: block;
+      position: sticky;
+      top: 0;
+      align-self: start;
+      padding-top: 7.5rem;
+      font-family: var(--mono);
+      font-size: var(--step--2);
+      line-height: 1.9;
+    }
+    .index ol {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 0.15rem;
+    }
+    .index a {
+      color: var(--muted);
+      text-decoration: none;
+      letter-spacing: 0.04em;
+      display: block;
+      border-left: 1px solid var(--border);
+      padding-left: 0.85rem;
+    }
+    .index a:hover,
+    .index a:focus-visible { color: var(--accent-deep); border-left-color: var(--accent); }
+    .index .index-rule {
+      height: 1px;
+      background: var(--border);
+      margin: 0.9rem 0 0.9rem 0.85rem;
+    }
+  }
+
+  .main { min-width: 0; }
+
+  /* ── masthead ──────────────────────────────────────────────────────── */
+
+  .masthead { padding: 5rem 0 3rem; border-bottom: 1px solid var(--border); }
+
+  .wordmark {
+    font-family: var(--mono);
+    font-size: clamp(2.5rem, 9vw, var(--step-4));
+    font-weight: 500;
+    letter-spacing: -0.045em;
+    margin: 0 0 1.25rem;
+    line-height: 1;
+  }
+  .wordmark .slash { color: var(--accent); }
+
+  .standfirst {
+    max-width: var(--measure);
+    font-size: var(--step-1);
+    line-height: 1.5;
+    color: var(--text);
+    margin: 0 0 2.25rem;
+    text-wrap: pretty;
+  }
+
+  .facts {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr));
+    gap: 1px;
+    background: var(--border);
+    border: 1px solid var(--border);
+  }
+  .fact { background: var(--bg); padding: 0.95rem 1.1rem; }
+  .fact dt {
+    font-family: var(--mono);
+    font-size: var(--step--2);
+    text-transform: uppercase;
+    letter-spacing: 0.11em;
+    color: var(--muted);
+    margin: 0 0 0.3rem;
+  }
+  .fact dd {
+    font-family: var(--mono);
+    font-size: var(--step-1);
+    font-variant-numeric: tabular-nums;
+    margin: 0;
+    letter-spacing: -0.02em;
+  }
+
+  /* ── sections ──────────────────────────────────────────────────────── */
+
+  section { padding-top: 4.5rem; }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: var(--step--2);
+    text-transform: uppercase;
+    letter-spacing: 0.16em;
+    color: var(--accent);
+    margin: 0 0 0.75rem;
+  }
+
+  h2 {
+    font-family: var(--mono);
+    font-size: var(--step-2);
+    font-weight: 500;
+    letter-spacing: -0.03em;
+    line-height: 1.15;
+    margin: 0 0 1.5rem;
+    max-width: var(--measure);
+    text-wrap: balance;
+  }
+
+  h3 {
+    font-family: var(--mono);
+    font-size: var(--step-0);
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    margin: 2.5rem 0 0.75rem;
+    max-width: var(--measure);
+  }
+
+  p, ul, ol { max-width: var(--measure); }
+  p { margin: 0 0 1.15rem; text-wrap: pretty; }
+  ul, ol { margin: 0 0 1.15rem; padding-left: 1.25rem; }
+  li { margin-bottom: 0.4rem; }
+  li::marker { color: var(--muted); }
+
+  a { color: var(--accent-deep); }
+  a:focus-visible,
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+
+  code {
+    font-family: var(--mono);
+    font-size: 0.875em;
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    padding: 0.08em 0.34em;
+    border-radius: 2px;
+    word-break: break-word;
+  }
+
+  .ref {
+    font-family: var(--mono);
+    font-size: 0.83em;
+    color: var(--muted);
+    white-space: nowrap;
+    background: none;
+    border: 0;
+    border-bottom: 1px dotted var(--border);
+    padding: 0;
+  }
+
+  strong { font-weight: 600; }
+
+  /* ── flow diagram ──────────────────────────────────────────────────── */
+
+  .flow-wrap { overflow-x: auto; margin: 0 0 1.75rem; padding-bottom: 0.4rem; }
+
+  .flow {
+    display: flex;
+    align-items: stretch;
+    gap: 0;
+    min-width: 44rem;
+  }
+  .stage {
+    flex: 1;
+    border: 1px solid var(--border);
+    border-right: 0;
+    padding: 0.9rem 1rem 1rem;
+    background: var(--bg);
+  }
+  .stage:last-child { border-right: 1px solid var(--border); }
+  .stage--accent { background: var(--accent-pale); }
+  .stage-n {
+    font-family: var(--mono);
+    font-size: var(--step--2);
+    color: var(--accent);
+    letter-spacing: 0.12em;
+    display: block;
+    margin-bottom: 0.45rem;
+  }
+  .stage-t {
+    font-family: var(--mono);
+    font-size: var(--step--1);
+    font-weight: 600;
+    display: block;
+    margin-bottom: 0.35rem;
+    letter-spacing: -0.01em;
+  }
+  .stage-d {
+    font-size: var(--step--1);
+    color: var(--muted);
+    line-height: 1.45;
+    display: block;
+  }
+
+  /* ── tables ────────────────────────────────────────────────────────── */
+
+  .table-wrap { overflow-x: auto; margin: 0 0 1.75rem; }
+
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    min-width: 34rem;
+    font-size: var(--step--1);
+  }
+  th, td {
+    text-align: left;
+    vertical-align: top;
+    padding: 0.6rem 1rem 0.6rem 0;
+    border-bottom: 1px solid var(--hairline);
+  }
+  th {
+    font-family: var(--mono);
+    font-size: var(--step--2);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--muted);
+    font-weight: 500;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  td:first-child { font-family: var(--mono); white-space: nowrap; padding-right: 1.5rem; }
+  td.wrap { font-family: var(--sans); white-space: normal; }
+  .num { font-variant-numeric: tabular-nums; }
+
+  /* ── constraint ledger ─────────────────────────────────────────────── */
+
+  .ledger { border-top: 1px solid var(--border); margin-bottom: 1.75rem; }
+
+  .entry {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0.2rem;
+    padding: 1.1rem 0;
+    border-bottom: 1px solid var(--hairline);
+  }
+  @media (min-width: 720px) {
+    .entry { grid-template-columns: 13rem minmax(0, 1fr); gap: 0 2rem; }
+  }
+  .entry-k {
+    font-family: var(--mono);
+    font-size: var(--step--1);
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    text-wrap: balance;
+  }
+  .entry-v { font-size: var(--step--1); color: var(--muted); line-height: 1.55; max-width: 56ch; }
+  .entry-v strong { color: var(--text); font-weight: 600; }
+
+  /* ── proposals ─────────────────────────────────────────────────────── */
+
+  .proposal { border-top: 1px solid var(--border); padding: 2.25rem 0 0.75rem; }
+  .proposal:first-of-type { border-top-width: 2px; }
+
+  .proposal-head {
+    display: grid;
+    grid-template-columns: 2.75rem minmax(0, 1fr);
+    gap: 0 0.75rem;
+    align-items: baseline;
+    margin-bottom: 1rem;
+  }
+  .proposal-n {
+    font-family: var(--mono);
+    font-size: var(--step-2);
+    font-variant-numeric: tabular-nums;
+    color: var(--border);
+    letter-spacing: -0.04em;
+    line-height: 1;
+  }
+  .proposal-title {
+    font-family: var(--mono);
+    font-size: var(--step-1);
+    font-weight: 600;
+    letter-spacing: -0.025em;
+    margin: 0;
+    line-height: 1.25;
+    text-wrap: balance;
+  }
+  .proposal-body { padding-left: 0; }
+  @media (min-width: 720px) { .proposal-body { padding-left: 3.5rem; } }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.55rem 0 0; }
+  .chip {
+    font-family: var(--mono);
+    font-size: var(--step--2);
+    text-transform: uppercase;
+    letter-spacing: 0.09em;
+    padding: 0.14rem 0.5rem;
+    border: 1px solid currentColor;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  .chip--bug     { color: var(--rose); }
+  .chip--cost    { color: var(--peach); }
+  .chip--clarity { color: var(--lavender); }
+  .chip--effort  { color: var(--muted); }
+
+  .now {
+    background: var(--surface);
+    border-left: 2px solid var(--border);
+    padding: 0.85rem 1.1rem;
+    margin: 0 0 1.15rem;
+    max-width: var(--measure);
+    font-size: var(--step--1);
+    line-height: 1.55;
+  }
+  .now-label {
+    font-family: var(--mono);
+    font-size: var(--step--2);
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: var(--muted);
+    display: block;
+    margin-bottom: 0.3rem;
+  }
+  .now p { margin: 0; max-width: none; }
+  .now p + p { margin-top: 0.6rem; }
+
+  pre {
+    font-family: var(--mono);
+    font-size: var(--step--1);
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    padding: 0.9rem 1.1rem;
+    overflow-x: auto;
+    margin: 0 0 1.15rem;
+    max-width: var(--measure);
+    line-height: 1.5;
+  }
+  pre code { background: none; border: 0; padding: 0; font-size: 1em; }
+
+  /* ── closing note ──────────────────────────────────────────────────── */
+
+  .note {
+    border: 1px solid var(--border);
+    padding: 1.5rem 1.6rem;
+    max-width: var(--measure);
+    background: var(--surface);
+  }
+  .note h3 { margin-top: 0; }
+  .note p:last-child { margin-bottom: 0; }
+
+  .colophon {
+    margin-top: 5rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--border);
+    font-family: var(--mono);
+    font-size: var(--step--2);
+    color: var(--muted);
+    letter-spacing: 0.04em;
+    max-width: var(--measure);
+    line-height: 1.7;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+  }
+
+  html { scroll-behavior: smooth; }
+</style>
+
+<div class="shell">
+
+  <nav class="index" aria-label="Sections">
+    <ol>
+      <li><a href="#shape">The shape of it</a></li>
+      <li><a href="#flows">Three flows</a></li>
+      <li><a href="#state">Where state lives</a></li>
+      <li><a href="#constraints">Why it looks like this</a></li>
+      <div class="index-rule"></div>
+      <li><a href="#proposals">Proposals</a></li>
+      <li><a href="#smaller">Smaller fixes</a></li>
+      <li><a href="#leave">Leave alone</a></li>
+    </ol>
+  </nav>
+
+  <main class="main">
+
+    <header class="masthead">
+      <h1 class="wordmark">yt2txt<span class="slash">/</span></h1>
+      <p class="standfirst">
+        Paste a YouTube link, get the meat of the video as structured Markdown. A React SPA
+        on CloudFront talking to exactly one AWS Lambda, which hands the URL straight to
+        Gemini and files the result in DynamoDB. Underneath the small surface area is a
+        resumable job runner, a hand-written service worker, and a set of design decisions
+        that only make sense once you know which limits they were bending around.
+      </p>
+      <dl class="facts">
+        <div class="fact"><dt>Source lines</dt><dd class="num">3,203</dd></div>
+        <div class="fact"><dt>Lambdas</dt><dd class="num">1</dd></div>
+        <div class="fact"><dt>DDB tables</dt><dd class="num">3</dd></div>
+        <div class="fact"><dt>SPA routes</dt><dd class="num">5</dd></div>
+        <div class="fact"><dt>Test files</dt><dd class="num">4</dd></div>
+        <div class="fact"><dt>Test runner</dt><dd class="num">0</dd></div>
+      </dl>
+    </header>
+
+    <!-- ────────────────────────────────────────────────────────────── -->
+    <section id="shape">
+      <p class="eyebrow">Architecture</p>
+      <h2>The shape of it</h2>
+
+      <p>
+        Three layers, each with a single source of truth, and no framework doing the joining.
+        There is no router, no state library, no API gateway, and no build step for the
+        service worker.
+      </p>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th scope="col">Layer</th><th scope="col">Lives in</th><th scope="col">What it is</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Frontend</td>
+              <td>src/</td>
+              <td class="wrap">One <code>App.jsx</code> component holding five routes, plus a
+                <code>People.jsx</code> page. Routing is 27 lines of <code>useSyncExternalStore</code>
+                over the History API.</td>
+            </tr>
+            <tr>
+              <td>PWA</td>
+              <td>public/</td>
+              <td class="wrap">Hand-written <code>sw.js</code>, a manifest declaring an Android
+                share target, and a bookmarklet for desktop browsers that have no share menu.</td>
+            </tr>
+            <tr>
+              <td>Backend</td>
+              <td>backend/summarise/</td>
+              <td class="wrap">One Lambda behind a Function URL, dispatched by HTTP method and by
+                three magic keys on directly-invoked events.</td>
+            </tr>
+            <tr>
+              <td>Infra</td>
+              <td>infra/pulumi/</td>
+              <td class="wrap">224 lines of Python Pulumi: S3 + CloudFront + ACM + Route53,
+                three DynamoDB tables, the Lambda, its Function URL, and one EventBridge tick.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        Everything is driven through <code>make</code>, which shells out to
+        <code>docker compose</code> — you need neither Node nor Python on the host. There is
+        no <code>make test</code> and no linter.
+      </p>
+    </section>
+
+    <!-- ────────────────────────────────────────────────────────────── -->
+    <section id="flows">
+      <p class="eyebrow">Runtime</p>
+      <h2>Three flows</h2>
+
+      <h3>Summarise one video</h3>
+      <p>
+        The common path. Everything after the Lambda receives the URL is a straight line —
+        Gemini fetches the transcript itself from the URL, so there is no transcript service
+        and no media handling in this codebase at all.
+      </p>
+
+      <div class="flow-wrap">
+        <div class="flow">
+          <div class="stage">
+            <span class="stage-n">01</span>
+            <span class="stage-t">canonicalise</span>
+            <span class="stage-d">Browser rewrites shorts/live/embed/<code>m.</code> links to
+              <code>watch?v=</code> and strips <code>?si=</code> tracking.</span>
+          </div>
+          <div class="stage">
+            <span class="stage-n">02</span>
+            <span class="stage-t">dedupe</span>
+            <span class="stage-d">Lambda reads DynamoDB by URL. A hit returns immediately with
+              <code>cached: true</code>.</span>
+          </div>
+          <div class="stage stage--accent">
+            <span class="stage-n">03</span>
+            <span class="stage-t">generate</span>
+            <span class="stage-d">Walks a model chain, passing the URL as a
+              <code>fileData</code> part with a duration-derived fps.</span>
+          </div>
+          <div class="stage">
+            <span class="stage-n">04</span>
+            <span class="stage-t">tag</span>
+            <span class="stage-d">Parses and strips the <code>Speakers:</code> trailer line;
+              falls back to a cheap text-only re-read.</span>
+          </div>
+          <div class="stage">
+            <span class="stage-n">05</span>
+            <span class="stage-t">persist</span>
+            <span class="stage-d">Conditional <code>PutItem</code>. The loser of a race re-reads
+              and returns the winner's row.</span>
+          </div>
+        </div>
+      </div>
+
+      <h3>Share into the app</h3>
+      <p>
+        The manifest registers a share target posting to <code>/share</code> by
+        <strong>GET</strong>, so Android hands the link over as a plain navigation with no
+        server round-trip. The SPA reads the query string, scans <code>url</code> then
+        <code>text</code> then <code>title</code> for the first YouTube link (different apps
+        put it in different fields, often wrapped in prose), summarises with Flash Latest, and
+        does a <em>replacing</em> navigation to the result so Back does not re-fire the share.
+        On macOS and Linux this can never work — those OSes expose no share mechanism to
+        Chrome — hence the bookmarklet on the Home page hitting the same
+        <code>/share?url=</code> route.
+      </p>
+
+      <h3>Research a person</h3>
+      <p>
+        The most interesting machinery in the repo, and the one thing that is genuinely hard.
+        A job searches the last six months of YouTube for a name, then summarises up to eight
+        videos one at a time. Each video costs a real generateContent call, so the whole job
+        can easily outlive a single Lambda invocation — even one with the maximum 900 s timeout.
+      </p>
+      <p>The runner is idempotent and chunked. Before each video it asks
+        <code>context.getRemainingTimeInMillis()</code> whether there is room; if not, it
+        self-invokes a continuation and returns. Per-video rows persist as they complete, so
+        a resumed run only picks up what is still <code>pending</code>. Three separate triggers
+        call the same function:</p>
+      <ul>
+        <li>the initial <code>POST { action: "research" }</code>,</li>
+        <li>its own time-budget continuations,</li>
+        <li>and an EventBridge tick that scans for jobs idle past a 10-minute stall threshold
+          and restarts them — recovering work whose Lambda was killed outright.</li>
+      </ul>
+      <p>
+        Status runs <code>queued → running → finalising → done | error</code>, with a
+        continuation budget of 12 as a loop guard.
+      </p>
+    </section>
+
+    <!-- ────────────────────────────────────────────────────────────── -->
+    <section id="state">
+      <p class="eyebrow">Data</p>
+      <h2>Where state lives</h2>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th scope="col">Table</th><th scope="col">Key</th><th scope="col">Holds</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>yt2txt-summaries</td>
+              <td>url</td>
+              <td class="wrap">One row per summarised video: markdown, the model's own plain-English
+                title, date, which model actually produced it, plus the authoritative YouTube
+                video/channel titles and speaker tags.</td>
+            </tr>
+            <tr>
+              <td>yt2txt-people</td>
+              <td>person</td>
+              <td class="wrap">Job state, progress, continuation count, last-progress timestamp,
+                and the synthesised meta-summary.</td>
+            </tr>
+            <tr>
+              <td>yt2txt-people-videos</td>
+              <td>person + videoId</td>
+              <td class="wrap">One row per video in a person's job, with its own status so runs
+                resume rather than restart.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        The four newest summary fields — <code>videoTitle</code>, <code>channelTitle</code>,
+        <code>channelId</code>, <code>speakers</code> — are all best-effort, and rows written
+        before they existed read back as <code>null</code> or <code>[]</code>. A one-shot
+        <code>backfill.js</code> enriches those rows, and is idempotent by construction: a row
+        is done once it carries the attribute, and a <em>failed</em> extraction deliberately
+        writes nothing so it stays eligible for a retry.
+      </p>
+      <p>
+        Worth knowing: <code>listSummaries()</code> whitelists fields by destructuring the
+        DynamoDB item. Add an attribute and it is silently dropped from the list response until
+        you add it there <em>and</em> to <code>summaryPayload()</code>.
+      </p>
+    </section>
+
+    <!-- ────────────────────────────────────────────────────────────── -->
+    <section id="constraints">
+      <p class="eyebrow">Rationale</p>
+      <h2>Why it looks like this</h2>
+
+      <p>
+        Most of the odd-looking choices are load-bearing. This is the ledger of limits the
+        design is bending around — read it before changing anything in the next section.
+      </p>
+
+      <div class="ledger">
+        <div class="entry">
+          <div class="entry-k">Function URL, not API Gateway</div>
+          <div class="entry-v">API Gateway caps at <strong>29 s</strong>. Summarising a long video
+            routinely takes longer, so the Lambda is exposed directly.</div>
+        </div>
+        <div class="entry">
+          <div class="entry-k">Permission before FunctionUrl</div>
+          <div class="entry-v">If the <code>NONE</code>-auth permission does not exist first, AWS
+            caches a "no public access" authz state that <strong>survives later policy edits</strong>.
+            The <code>depends_on</code> enforcing this is not decoration.</div>
+        </div>
+        <div class="entry">
+          <div class="entry-k">Throttled video tokens</div>
+          <div class="entry-v">Gemini defaults to 1 fps at full resolution, roughly 300 tokens/sec.
+            A 25-minute video alone blows the <strong>250k free-tier TPM</strong> limit. Hence
+            <code>MEDIA_RESOLUTION_LOW</code> plus an fps ladder from 1.0 down to 0.1 by duration.
+            Audio stays at 1-second granularity regardless, which is what timestamps anchor to.</div>
+        </div>
+        <div class="entry">
+          <div class="entry-k">Speaker tags as a prompt contract</div>
+          <div class="entry-v">Not <code>responseSchema</code> — the model chain falls back to
+            Gemma, which <strong>does not support it</strong>. So the prompt asks for a trailer
+            line, which is parsed and then stripped before storage.</div>
+        </div>
+        <div class="entry">
+          <div class="entry-k">Synchronous Gemini, not the Batch API</div>
+          <div class="entry-v">The Batch API is paid-tier only; on a free-tier key
+            <code>ai.batches.create()</code> fails <code>400 FAILED_PRECONDITION</code>.</div>
+        </div>
+        <div class="entry">
+          <div class="entry-k">Dynamic model list</div>
+          <div class="entry-v">Derived from <code>ai.models.list()</code> and cached 24 h. The same
+            list backs both the dropdown and the request allow-list, so the two
+            <strong>cannot drift</strong>. Hand-kept fallbacks exist only for when that fetch fails.</div>
+        </div>
+        <div class="entry">
+          <div class="entry-k">manifest.json, not .webmanifest</div>
+          <div class="entry-v"><code>aws s3 sync</code> picks Content-Type from the extension, and
+            <code>.webmanifest</code> is not in the AWS CLI mime map — it would upload as
+            <code>application/octet-stream</code>.</div>
+        </div>
+        <div class="entry">
+          <div class="entry-k">Never set Vite <code>base: './'</code></div>
+          <div class="entry-v">Client-side routing depends on CloudFront mapping 403/404 to
+            <code>index.html</code> <em>and</em> on Vite emitting absolute asset paths. Relative
+            paths would break every non-root URL.</div>
+        </div>
+        <div class="entry">
+          <div class="entry-k">Self-invoke via env, not config</div>
+          <div class="entry-v">The worker reads <code>AWS_LAMBDA_FUNCTION_NAME</code>, injected by
+            the runtime. Passing it as Pulumi config would be a circular dependency.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ────────────────────────────────────────────────────────────── -->
+    <section id="proposals">
+      <p class="eyebrow">Proposals</p>
+      <h2>What I would clean up, in order</h2>
+
+      <p>
+        Ranked by payoff per unit of effort, not by size — the numbering is the ranking. Two of
+        these are correctness bugs that will bite as the table grows; the rest are duplication
+        and structure. Every claim below points at the code it came from.
+      </p>
+
+      <!-- 1 -->
+      <article class="proposal">
+        <div class="proposal-head">
+          <span class="proposal-n">01</span>
+          <div>
+            <h3 class="proposal-title">Run the tests that already exist</h3>
+            <div class="chips">
+              <span class="chip chip--clarity">Confidence</span>
+              <span class="chip chip--effort">Effort: XS</span>
+            </div>
+          </div>
+        </div>
+        <div class="proposal-body">
+          <div class="now">
+            <span class="now-label">Today</span>
+            <p>Four <code>.test.mjs</code> files — <span class="ref">src/share.test.mjs</span>,
+            <span class="ref">tags.test.mjs</span>, <span class="ref">people-pure.test.mjs</span>,
+            <span class="ref">media-pure.test.mjs</span> — each with a hand-rolled
+            <code>check()</code> helper and a <code>console.log('ok - …')</code>. Nothing runs
+            them. CI runs no tests at all.</p>
+          </div>
+          <p>
+            Node 20 ships a test runner. Adopting it costs zero dependencies and turns four
+            orphaned files into a gate:
+          </p>
+<pre><code>test:  ## Run pure-module smoke tests
+	docker compose run --rm node node --test</code></pre>
+          <p>
+            Pass no paths. Bare <code>node --test</code> walks the working directory recursively,
+            picks up anything matching <code>*.test.mjs</code>, and skips
+            <code>node_modules</code> on its own — which is what finds all four files across
+            <code>src/</code> and <code>backend/summarise/</code> in one run. Naming the two
+            directories as arguments does <em>not</em> do this: the runner treats each path as a
+            test module and tries to import it, so both fail and nothing runs. Explicit globs
+            (<code>src/*.test.mjs backend/summarise/*.test.mjs</code>) work too, at the cost of
+            needing an edit every time a file lands somewhere new.
+          </p>
+          <p>
+            Convert the <code>check()</code> calls to <code>test()</code> from
+            <code>node:test</code> — the assertions are already <code>node:assert/strict</code>,
+            so the bodies are unchanged — and add the step to both workflows. Do this one first;
+            it is what makes the rest of the list safe to attempt.
+          </p>
+        </div>
+      </article>
+
+      <!-- 2 -->
+      <article class="proposal">
+        <div class="proposal-head">
+          <span class="proposal-n">02</span>
+          <div>
+            <h3 class="proposal-title">History is an unordered Scan pretending to be a feed</h3>
+            <div class="chips">
+              <span class="chip chip--bug">Correctness</span>
+              <span class="chip chip--effort">Effort: M</span>
+            </div>
+          </div>
+        </div>
+        <div class="proposal-body">
+          <div class="now">
+            <span class="now-label">Today</span>
+            <p><span class="ref">handler.js:316</span> — <code>Scan({ Limit: 100 })</code>, then
+            sort by <code>createdAt</code>, then <code>slice(0, 50)</code>.</p>
+          </div>
+          <p>
+            DynamoDB's <code>Limit</code> caps items <em>evaluated</em>, and Scan returns them in
+            internal hash order with no ordering guarantee. There is no
+            <code>LastEvaluatedKey</code> follow-up here. So the moment the table passes 100 rows,
+            "the last 50 summaries" becomes an arbitrary 100 rows sorted among themselves — and a
+            brand-new summary can be absent from History entirely, depending on where its URL
+            hashes. It will look like a caching bug and it is not.
+          </p>
+          <p>
+            Fix it with a global secondary index carrying a constant partition key and
+            <code>createdAt</code> as the sort key, then <code>Query</code> it backwards:
+          </p>
+<pre><code>QueryCommand({
+  IndexName: "byCreatedAt",
+  KeyConditionExpression: "#pk = :all",
+  ExpressionAttributeValues: { ":all": "SUMMARY" },
+  ScanIndexForward: false,
+  Limit: 50,
+})</code></pre>
+          <p>
+            A single hot partition is entirely fine at this scale, and the write path already
+            builds the item in one place, so stamping the constant on new writes is a one-line
+            change.
+          </p>
+          <p>
+            <strong>Backfill before you cut over.</strong> A GSI is sparse: items missing its
+            partition key are simply absent from the index. Every existing row predates the
+            attribute, so a Query against the fresh index returns only rows written after the
+            deploy — History would read as empty and then refill one summary at a time, which
+            looks far worse than the bug being fixed. Stamp the attribute on writes first, run a
+            one-shot pass over the table to add it to existing rows, confirm the index item count
+            has caught up, and only then point <code>listSummaries()</code> at the Query. If you
+            would rather not gate the cutover on the backfill, dual-read for one deploy: Query the
+            index, and fall back to the current Scan when it returns fewer than expected.
+            <code>backfill.js</code> is a working template for the one-shot pass.
+          </p>
+          <p>
+            <code>listPeople()</code> and <code>resumeStalledJobs()</code> also Scan — those
+            tables stay small enough that it is defensible, but they deserve a comment saying so.
+          </p>
+        </div>
+      </article>
+
+      <!-- 3 -->
+      <article class="proposal">
+        <div class="proposal-head">
+          <span class="proposal-n">03</span>
+          <div>
+            <h3 class="proposal-title">Add a single-summary endpoint; stop shipping the archive on every load</h3>
+            <div class="chips">
+              <span class="chip chip--bug">Correctness</span>
+              <span class="chip chip--cost">Payload</span>
+              <span class="chip chip--effort">Effort: S</span>
+            </div>
+          </div>
+        </div>
+        <div class="proposal-body">
+          <div class="now">
+            <span class="now-label">Today</span>
+            <p>There is no way to fetch one summary. <span class="ref">App.jsx:107</span> resolves
+            <code>/summary/&lt;videoId&gt;</code> by searching the in-memory history array, which
+            is populated by the one list call on mount.</p>
+          </div>
+          <p>Two consequences follow from the same root cause:</p>
+          <ul>
+            <li><strong>Deep links expire.</strong> Once a summary falls out of the newest 50, its
+              permalink renders "Summary not found" — even though the row is right there in
+              DynamoDB.</li>
+            <li><strong>Every cold load pays for the archive.</strong> The list ships up to 8,000
+              characters of markdown per row across 50 rows — up to ~400 KB — so the detail page
+              can read <code>item.summary</code> locally. The list UI itself uses 200 characters
+              of it.</li>
+          </ul>
+          <p>
+            Add <code>GET ?video=&lt;id&gt;</code> returning one row, have the detail route fetch
+            it when the item is not already in memory, and cut the list's markdown slice to ~300
+            characters. That is a smaller diff than it sounds — <code>summaryPayload()</code>
+            already exists and already backs three response paths.
+          </p>
+        </div>
+      </article>
+
+      <!-- 4 -->
+      <article class="proposal">
+        <div class="proposal-head">
+          <span class="proposal-n">04</span>
+          <div>
+            <h3 class="proposal-title">One copy of the model-call loop</h3>
+            <div class="chips">
+              <span class="chip chip--clarity">Duplication</span>
+              <span class="chip chip--effort">Effort: S</span>
+            </div>
+          </div>
+        </div>
+        <div class="proposal-body">
+          <div class="now">
+            <span class="now-label">Today</span>
+            <p>Four things exist twice, and the code says so out loud —
+            <span class="ref">handler.js:118</span> is commented <em>"Copy of people.js's
+            predicate"</em>:</p>
+            <p><code>isRetryableModelError</code> (<span class="ref">handler.js:120</span> /
+            <span class="ref">people-pure.js:53</span>) · <code>buildModelChain</code>
+            (<span class="ref">handler.js:134</span> / <span class="ref">people-pure.js:45</span>) ·
+            <code>MAX_MODEL_ATTEMPTS = 4</code> in both · <code>withTimeout</code>
+            (<span class="ref">people.js:76</span> / <span class="ref">speakers.js:26</span>).</p>
+          </div>
+          <p>
+            The two predicates have <em>already</em> diverged: the people-side one also matches
+            <code>"timed out"</code> and <code>"timeout"</code>, because that path wraps calls in a
+            timeout and the request path does not. That divergence is correct today and invisible
+            tomorrow.
+          </p>
+          <p>
+            Extract one <code>gemini.js</code> with a single
+            <code>generateWithFallback(ai, { contents, chain, config, retries, timeoutMs })</code>.
+            Both callers do the same walk — try model, classify the error, advance — and the only
+            real difference is that the people path adds exponential backoff between attempts,
+            which becomes <code>retries: 3</code> versus <code>retries: 1</code>. Keep the shared
+            predicate in <code>people-pure.js</code> (the strictly broader one) and delete the
+            handler's copy; it is already the dependency-free module that plain
+            <code>node</code> can import.
+          </p>
+        </div>
+      </article>
+
+      <!-- 5 -->
+      <article class="proposal">
+        <div class="proposal-head">
+          <span class="proposal-n">05</span>
+          <div>
+            <h3 class="proposal-title">Break up App.jsx — and hoist the components out of it</h3>
+            <div class="chips">
+              <span class="chip chip--bug">React footgun</span>
+              <span class="chip chip--clarity">Structure</span>
+              <span class="chip chip--effort">Effort: M</span>
+            </div>
+          </div>
+        </div>
+        <div class="proposal-body">
+          <div class="now">
+            <span class="now-label">Today</span>
+            <p>585 lines holding five routes, and <code>Header</code>
+            (<span class="ref">App.jsx:301</span>) and <code>SpeakerTags</code>
+            (<span class="ref">App.jsx:275</span>) are both declared <em>inside</em> the
+            <code>BrightBlogApp</code> function body.</p>
+          </div>
+          <p>
+            That last part is a real bug, not a style note. A component declared inside a render
+            is a <strong>new component type on every render</strong>, so React unmounts and
+            remounts its entire subtree each time — discarding DOM state and focus rather than
+            reconciling. It is currently harmless only because neither subtree holds state. Move
+            both to module scope, or to their own files, and pass what they need as props.
+          </p>
+          <p>Alongside that split, three pieces are duplicated verbatim between
+            <code>App.jsx</code> and <code>People.jsx</code>: the
+            <code>LAMBDA_URL</code>/<code>authHeaders</code> pair
+            (<span class="ref">App.jsx:7</span> / <span class="ref">People.jsx:4</span>), the
+            markdown <code>urlTransform</code>, and the markdown link component. A single
+            <code>src/api.js</code> exporting typed calls —
+            <code>listSummaries()</code>, <code>getSummary(id)</code>,
+            <code>createSummary(url, model)</code>, <code>listModels()</code>,
+            <code>researchPerson(name)</code> — plus a
+            <code>src/components/Markdown.jsx</code> removes all of it and puts every
+            <code>fetch</code> in the codebase in one file.</p>
+          <p>
+            Two more things to sweep up in the same pass: replace the three
+            <code>alert()</code> calls (<span class="ref">App.jsx:178</span>,
+            <span class="ref">People.jsx:80</span>, <span class="ref">People.jsx:99</span>) with
+            inline error state — the <code>share</code> panel already models this well — and key
+            the history lists by <code>item.url</code> rather than array index
+            (<span class="ref">App.jsx:465</span>, <span class="ref">App.jsx:559</span>), since
+            new summaries are <em>prepended</em> and shift every index by one.
+          </p>
+        </div>
+      </article>
+
+      <!-- 6 -->
+      <article class="proposal">
+        <div class="proposal-head">
+          <span class="proposal-n">06</span>
+          <div>
+            <h3 class="proposal-title">Set Cache-Control explicitly on deploy</h3>
+            <div class="chips">
+              <span class="chip chip--cost">Delivery</span>
+              <span class="chip chip--effort">Effort: XS</span>
+            </div>
+          </div>
+        </div>
+        <div class="proposal-body">
+          <div class="now">
+            <span class="now-label">Today</span>
+            <p><span class="ref">Makefile:109</span> and <span class="ref">deploy-site.yml</span>
+            both run a bare <code>aws s3 sync dist/ s3://$BUCKET --delete</code>. No object gets a
+            <code>Cache-Control</code> header, so every file falls to CloudFront's default TTL and
+            the browser heuristic.</p>
+          </div>
+          <p>
+            That flattens a distinction the app depends on. Assets under <code>/assets/</code> are
+            content-hashed and immutable — they should be cached for a year. But
+            <code>sw.js</code> and <code>index.html</code> must revalidate, and the documented way
+            to push an update to every client is "bump <code>VERSION</code> in
+            <code>sw.js</code>". If a browser is holding a heuristically-cached service worker,
+            that bump does not land promptly.
+          </p>
+<pre><code>aws s3 sync dist/ s3://$BUCKET --delete \
+  --cache-control 'public,max-age=31536000,immutable' \
+  --exclude '*' --include 'assets/*'
+
+aws s3 sync dist/ s3://$BUCKET --delete \
+  --cache-control 'no-cache' \
+  --exclude 'assets/*'</code></pre>
+          <p>
+            The CloudFront invalidation stays — it is what makes <code>no-cache</code> at the edge
+            take effect immediately.
+          </p>
+        </div>
+      </article>
+
+      <!-- 7 -->
+      <article class="proposal">
+        <div class="proposal-head">
+          <span class="proposal-n">07</span>
+          <div>
+            <h3 class="proposal-title">Key summaries on videoId, and share the canonicaliser</h3>
+            <div class="chips">
+              <span class="chip chip--bug">Data model</span>
+              <span class="chip chip--effort">Effort: M</span>
+            </div>
+          </div>
+        </div>
+        <div class="proposal-body">
+          <div class="now">
+            <span class="now-label">Today</span>
+            <p>The hash key is the raw URL, and the Lambda's <code>YOUTUBE_URL_RE</code> accepts
+            both <code>watch?v=</code> and <code>youtu.be</code> forms. So one video can hold two
+            rows. <span class="ref">backfill.js:52</span> works around exactly this, grouping rows
+            by extracted video id because "the same video can legitimately hold several rows".</p>
+            <p>Canonicalisation happens in the <em>browser</em>
+            (<span class="ref">share.js:70</span>), which means anything hitting the Function URL
+            directly bypasses it.</p>
+          </div>
+          <p>
+            <code>src/share.js</code> is already pure and dependency-free — the header comment
+            says so and there is a plain-<code>node</code> test to prove it. Move it to a shared
+            location, import it on both sides, canonicalise at the top of the Lambda's POST
+            handler, and key the table on the 11-character video id. That collapses a whole class
+            of duplicate-row bug, makes <code>/summary/&lt;videoId&gt;</code> a genuine key lookup
+            rather than a client-side scan, and lets <code>videoIdFromUrl</code>
+            (<span class="ref">App.jsx:61</span>) — the <em>third</em> id extractor in the repo,
+            after <code>videoIdFrom</code> and <code>extractVideoId</code> — be deleted.
+          </p>
+          <p>
+            This one needs a migration: write new rows under the id, read through to the URL key
+            on miss, then run a one-shot copy. <code>backfill.js</code> is a working template for
+            exactly that shape of job.
+          </p>
+        </div>
+      </article>
+
+      <!-- 8 -->
+      <article class="proposal">
+        <div class="proposal-head">
+          <span class="proposal-n">08</span>
+          <div>
+            <h3 class="proposal-title">Split the web Lambda from the worker Lambda</h3>
+            <div class="chips">
+              <span class="chip chip--clarity">Blast radius</span>
+              <span class="chip chip--effort">Effort: L</span>
+            </div>
+          </div>
+        </div>
+        <div class="proposal-body">
+          <div class="now">
+            <span class="now-label">Today</span>
+            <p>One function, <code>timeout=900</code>, serving both a public HTTP endpoint and
+            three internally-invoked job types dispatched on magic keys —
+            <code>__personJob</code>, <code>__backfill</code>, <code>__resumeJobs</code>
+            (<span class="ref">handler.js:336</span>).</p>
+          </div>
+          <p>
+            The two workloads want opposite settings. A <code>GET /</code> wants a short timeout,
+            no self-invoke permission, and read-only DynamoDB access. The worker wants 900 s,
+            <code>lambda:InvokeFunction</code> on itself, and write access to all three tables.
+            Today the public endpoint carries the worker's IAM role and the worker's timeout,
+            so a hung request can sit there for fifteen minutes.
+          </p>
+          <p>
+            Split them: <code>web.handler</code> behind the Function URL, <code>worker.handler</code>
+            for EventBridge and self-invokes, sharing the same code bundle and the same modules.
+            Two <code>aws.lambda_.Function</code> resources over one archive, two roles, and the
+            magic-key branch disappears from the request path entirely. The Pulumi change is
+            small — the archive helper already exists.
+          </p>
+          <p>
+            The further step, if the job runner ever gets harder: move the continuation loop to
+            Step Functions, which gives retries, timeouts, and per-step observability for free
+            and deletes the self-invoke plumbing, the continuation budget, and the stall-detection
+            tick. That is a genuine rewrite of <code>people.js</code>, so it is worth it only if
+            the current machinery starts failing in ways the logs cannot explain.
+          </p>
+        </div>
+      </article>
+
+      <!-- 9 -->
+      <article class="proposal">
+        <div class="proposal-head">
+          <span class="proposal-n">09</span>
+          <div>
+            <h3 class="proposal-title">Drop Tailwind</h3>
+            <div class="chips">
+              <span class="chip chip--clarity">Dead weight</span>
+              <span class="chip chip--effort">Effort: XS</span>
+            </div>
+          </div>
+        </div>
+        <div class="proposal-body">
+          <div class="now">
+            <span class="now-label">Today</span>
+            <p><code>tailwindcss</code>, <code>postcss</code> and <code>autoprefixer</code> are
+            installed and configured, <span class="ref">index.css:1</span> pulls in all three
+            directives — and not one Tailwind utility class appears in any JSX. All 669 lines of
+            styling are hand-written CSS with custom properties and BEM-ish class names.</p>
+          </div>
+          <p>
+            The only thing Tailwind contributes is Preflight, which is stacked on top of the
+            file's own hand-written reset a few lines below it. Deleting the three directives,
+            <code>tailwind.config.js</code>, <code>postcss.config.js</code> and the three
+            devDependencies removes a build step and a source of confusion about which reset wins,
+            at the cost of a short explicit reset the file half-contains already. The CSS itself
+            is good and stays exactly as it is.
+          </p>
+        </div>
+      </article>
+    </section>
+
+    <!-- ────────────────────────────────────────────────────────────── -->
+    <section id="smaller">
+      <p class="eyebrow">Loose ends</p>
+      <h2>Smaller fixes, each an afternoon at most</h2>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th scope="col">Where</th><th scope="col">What</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>handler.js:203</td>
+              <td class="wrap">The cache hit ignores the requested model. Pick a different model for
+                an already-summarised video and you silently get the old one back, labelled with
+                the old model. Either say so in the UI or key the cache on
+                <code>(videoId, model)</code>.</td>
+            </tr>
+            <tr>
+              <td>handler.js:370</td>
+              <td class="wrap">The 4,096-byte body check runs on the raw string, and
+                <code>isBase64Encoded</code> is never consulted. Harmless with a JSON content-type
+                today; latent otherwise.</td>
+            </tr>
+            <tr>
+              <td>People.jsx:46–63</td>
+              <td class="wrap">Two effects share one mutable <code>pollRef</code> — one creates the
+                interval, the other clears or recreates it based on status. It works, but a single
+                effect keyed on "is the status terminal" is far easier to reason about. Pausing the
+                3-second poll when the tab is hidden would be free.</td>
+            </tr>
+            <tr>
+              <td>People.jsx:105</td>
+              <td class="wrap">The selected person is <code>useState</code>, not a route, so it is
+                the only view in the app you cannot link to or refresh. Everything else moved to the
+                History API. <code>/people/&lt;name&gt;</code> would finish the job.</td>
+            </tr>
+            <tr>
+              <td>useLocation.js:12</td>
+              <td class="wrap">The snapshot is <code>pathname</code> only, so query-string changes
+                never re-render, and <code>navigate()</code> early-returns when the pathname matches
+                — meaning <code>/share?url=A</code> to <code>/share</code> is a no-op. Include
+                <code>search</code> in both.</td>
+            </tr>
+            <tr>
+              <td>__main__.py:170</td>
+              <td class="wrap">The stall-resumer fires every 3 minutes against a 10-minute stall
+                threshold — roughly 14,400 invocations a month to detect something that cannot be
+                true more than a fifth of the time. <code>rate(5 minutes)</code> loses nothing.</td>
+            </tr>
+            <tr>
+              <td>handler.js:60</td>
+              <td class="wrap"><code>filterModels</code> orders by
+                <code>b.value.localeCompare(a.value)</code>, i.e. reverse alphabetical on the model
+                id. It puts newer models first by coincidence of naming, not by design. Worth either
+                a comment admitting that, or an explicit rank.</td>
+            </tr>
+            <tr>
+              <td>Shared secret</td>
+              <td class="wrap"><code>SHARED_SECRET</code> is checked server-side but shipped to the
+                browser as <code>VITE_YT2TXT_KEY</code>, baked into the bundle at build time. It
+                deters drive-by traffic and nothing more. That is a reasonable trade for a personal
+                app — it just should not be described as auth. If the Gemini bill ever matters,
+                the real answer is putting the Function URL behind CloudFront as an origin, which
+                also deletes the hardcoded CORS origin list.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ────────────────────────────────────────────────────────────── -->
+    <section id="leave">
+      <p class="eyebrow">Restraint</p>
+      <h2>Things that look wrong and are not</h2>
+
+      <p>
+        A cleanup pass is where good constraints get optimised away. These four all read as
+        obvious improvements and all of them would break something:
+      </p>
+
+      <div class="ledger">
+        <div class="entry">
+          <div class="entry-k">"Batch the Gemini calls"</div>
+          <div class="entry-v">The Batch API is paid-tier only. On this key it fails outright. The
+            per-video synchronous loop is deliberate.</div>
+        </div>
+        <div class="entry">
+          <div class="entry-k">"Summarise videos in parallel"</div>
+          <div class="entry-v">Eight concurrent video calls against a 250k TPM free-tier limit
+            would rate-limit the whole job. One at a time is the constraint talking.</div>
+        </div>
+        <div class="entry">
+          <div class="entry-k">"Use responseSchema for speaker tags"</div>
+          <div class="entry-v">Gemma does not support it, and Gemma is in the fallback chain. The
+            prompt contract plus a text-only re-read is the version that survives the fallback.</div>
+        </div>
+        <div class="entry">
+          <div class="entry-k">"Replace sw.js with vite-plugin-pwa"</div>
+          <div class="entry-v">The hand-written worker has no precache manifest to keep in sync,
+            because Vite's hashed filenames make the caching rules derivable at request time. The
+            plugin would add a build step to solve a problem this app does not have.</div>
+        </div>
+      </div>
+
+      <div class="note">
+        <h3>Suggested order</h3>
+        <p>
+          Proposal 01 first — it is an hour, and it is what makes 02 through 07 verifiable rather
+          than hopeful. Then 02 and 03 together, since they touch the same two functions and
+          together fix both "new summaries sometimes vanish" and "old permalinks die" — budget for
+          02's backfill, which is the part that decides when the cutover is safe. 04, 06 and 09
+          are independent and can go in any order or any spare afternoon. Leave 07 and 08 until
+          the first three have settled; both involve migrations, and neither is urgent.
+        </p>
+      </div>
+    </section>
+
+    <p class="colophon">
+      Written against commit 0493915 · counts from the tracked source tree, excluding
+      node_modules and dist
+    </p>
+
+  </main>
+</div>
