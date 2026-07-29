@@ -1,7 +1,7 @@
 import { GoogleGenAI } from "@google/genai";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, PutCommand, QueryCommand, ScanCommand, GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
+import { invokeWorker } from "./invoke.js";
 import { searchVideosByPerson, getVideoMetadata } from "./youtube.js";
 import { videoIdFrom } from "./youtube-url.js";
 import { DEFAULT_MODEL, MEDIA_RESOLUTION_LOW, fpsForDuration } from "./constants.js";
@@ -20,11 +20,9 @@ import {
 import { generateWithFallback } from "./gemini.js";
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
-const lambda = new LambdaClient({});
 
 const PEOPLE_TABLE = process.env.PEOPLE_TABLE;
 const PEOPLE_VIDEOS_TABLE = process.env.PEOPLE_VIDEOS_TABLE;
-const SELF_FUNCTION_NAME = process.env.AWS_LAMBDA_FUNCTION_NAME;
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
 
@@ -63,16 +61,6 @@ Respond with JSON only — no prose before or after.`;
 
 export function normalisePerson(name) {
   return name.trim().toLowerCase().replace(/\s+/g, " ");
-}
-
-// ── small async utilities ────────────────────────────────────────────────────
-
-async function selfInvoke(payload) {
-  await lambda.send(new InvokeCommand({
-    FunctionName: SELF_FUNCTION_NAME,
-    InvocationType: "Event",
-    Payload: Buffer.from(JSON.stringify(payload)),
-  }));
 }
 
 // ── DynamoDB helpers ─────────────────────────────────────────────────────────
@@ -130,6 +118,9 @@ async function updateVideoRow(person, videoId, attrs) {
 
 // ── request entry point ──────────────────────────────────────────────────────
 
+// Runs on the *web* function (POST { action: "research" }): it writes the
+// queued job row and hands the work to the worker. Everything below this — the
+// job runner and the resumer — runs on the worker instead.
 export async function researchPerson(displayName, model, { force = false } = {}) {
   const person = normalisePerson(displayName);
   if (!person) {
@@ -157,7 +148,7 @@ export async function researchPerson(displayName, model, { force = false } = {})
     },
   }));
 
-  await selfInvoke({ __personJob: true, person });
+  await invokeWorker({ __personJob: true, person });
 
   return {
     statusCode: 202,
@@ -329,10 +320,11 @@ async function finalisePerson(ai, modelChain, person, displayName) {
 
 // ── the worker ───────────────────────────────────────────────────────────────
 
-// Idempotent and resumable. Called by one of three triggers: the initial
-// research request, a self-invoked continuation, or the safety-net resumer.
-// `allowedModels` is a string[] of model values; `context` is the Lambda
-// context object (used for remaining-time checks).
+// Idempotent and resumable. Called by one of three triggers, all of them
+// arriving as `{ __personJob: true }` on the worker function: the initial
+// research request (from the web function), a self-invoked continuation, or the
+// safety-net resumer. `allowedModels` is a string[] of model values; `context`
+// is the Lambda context object (used for remaining-time checks).
 export async function runPersonJob(person, allowedModels = [], context) {
   const remaining = () => (context?.getRemainingTimeInMillis?.() ?? Number.MAX_SAFE_INTEGER);
 
@@ -379,7 +371,7 @@ export async function runPersonJob(person, allowedModels = [], context) {
           progress: { phase: "summarising", current: doneCount, total, failures },
           lastProgressAt: Date.now(),
         });
-        await selfInvoke({ __personJob: true, person });
+        await invokeWorker({ __personJob: true, person });
         return;
       }
       await updatePerson(person, {
@@ -409,7 +401,7 @@ export async function runPersonJob(person, allowedModels = [], context) {
     // finalise phase
     if (!canStartMeta(remaining())) {
       await updatePerson(person, { lastProgressAt: Date.now() });
-      await selfInvoke({ __personJob: true, person });
+      await invokeWorker({ __personJob: true, person });
       return;
     }
     await finalisePerson(ai, modelChain, person, displayName);
@@ -445,7 +437,7 @@ export async function resumeStalledJobs() {
   for (const row of rows) {
     if (!isStalled(row, now)) continue;
     console.warn(`resuming stalled job: "${row.person}" (status=${row.status})`);
-    await selfInvoke({ __personJob: true, person: row.person });
+    await invokeWorker({ __personJob: true, person: row.person });
     resumed++;
   }
   return { scanned: rows.length, resumed };

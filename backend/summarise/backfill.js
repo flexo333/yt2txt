@@ -10,8 +10,14 @@ import { extractSpeakersFromMarkdown } from "./speakers.js";
 import { DEFAULT_MODEL, SUMMARY_INDEX_PK, SUMMARY_INDEX_PK_VALUE } from "./constants.js";
 
 // One-shot repair of summaries written before the current write path existed.
-// Invoke the Lambda directly with { "__backfill": true }; add "dryRun": true to
-// see what would change without writing.
+// Invoke the *worker* Lambda directly with { "__backfill": true } — the URL
+// function does not dispatch jobs and cannot delete a row. Add "dryRun": true
+// to see what would change without writing.
+//
+//   FN=$(docker compose run --rm -T pulumi stack output worker_function_name)
+//   docker compose run --rm awscli lambda invoke --function-name "$FN" \
+//     --cli-binary-format raw-in-base64-out \
+//     --payload '{"__backfill": true, "dryRun": true}' /dev/stdout
 //
 // Four independent passes per row, each skipped if the row is already right:
 //   - canonical key: move rows stored under a non-canonical URL onto the

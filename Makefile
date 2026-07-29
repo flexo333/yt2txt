@@ -72,9 +72,9 @@ infra-refresh: ## Resync Pulumi state from AWS (fixes stale api_url drift)
 	docker compose run --rm -T pulumi stack output api_url
 
 .PHONY: logs
-logs: ## Tail recent Lambda logs (SINCE=30m, FILTER='' by default)
-	@FN=$$(docker compose run --rm -T pulumi stack output lambda_function_name 2>/dev/null | tr -d '\r\n'); \
-	test -n "$$FN" || { echo "❌  lambda_function_name not exported — run 'make infra-up' first"; exit 1; }; \
+logs: ## Tail recent Lambda logs (SINCE=30m, FILTER=''; LAMBDA=worker_function_name for the worker)
+	@FN=$$(docker compose run --rm -T pulumi stack output $${LAMBDA:-lambda_function_name} 2>/dev/null | tr -d '\r\n'); \
+	test -n "$$FN" || { echo "❌  $${LAMBDA:-lambda_function_name} not exported — run 'make infra-up' first"; exit 1; }; \
 	SINCE=$${SINCE:-30m}; \
 	echo "→ Logs for $$FN (last $$SINCE)"; \
 	if [ -n "$$FILTER" ]; then \
@@ -84,18 +84,18 @@ logs: ## Tail recent Lambda logs (SINCE=30m, FILTER='' by default)
 	fi
 
 .PHONY: logs-errors
-logs-errors: ## Show only error-ish log lines (SINCE=1h by default)
-	@FN=$$(docker compose run --rm -T pulumi stack output lambda_function_name 2>/dev/null | tr -d '\r\n'); \
-	test -n "$$FN" || { echo "❌  lambda_function_name not exported — run 'make infra-up' first"; exit 1; }; \
+logs-errors: ## Show only error-ish log lines (SINCE=1h; LAMBDA=worker_function_name for the worker)
+	@FN=$$(docker compose run --rm -T pulumi stack output $${LAMBDA:-lambda_function_name} 2>/dev/null | tr -d '\r\n'); \
+	test -n "$$FN" || { echo "❌  $${LAMBDA:-lambda_function_name} not exported — run 'make infra-up' first"; exit 1; }; \
 	SINCE=$${SINCE:-1h}; \
 	echo "→ Errors for $$FN (last $$SINCE)"; \
 	docker compose run --rm -T awscli logs tail /aws/lambda/$$FN --since $$SINCE --format short \
 		--filter-pattern '?ERROR ?Error ?error ?Exception ?exception ?"Task timed out" ?"Unhandled"'
 
 .PHONY: logs-follow
-logs-follow: ## Stream Lambda logs live (Ctrl-C to stop)
-	@FN=$$(docker compose run --rm -T pulumi stack output lambda_function_name 2>/dev/null | tr -d '\r\n'); \
-	test -n "$$FN" || { echo "❌  lambda_function_name not exported — run 'make infra-up' first"; exit 1; }; \
+logs-follow: ## Stream Lambda logs live (Ctrl-C to stop; LAMBDA=worker_function_name for the worker)
+	@FN=$$(docker compose run --rm -T pulumi stack output $${LAMBDA:-lambda_function_name} 2>/dev/null | tr -d '\r\n'); \
+	test -n "$$FN" || { echo "❌  $${LAMBDA:-lambda_function_name} not exported — run 'make infra-up' first"; exit 1; }; \
 	echo "→ Streaming logs for $$FN"; \
 	docker compose run --rm awscli logs tail /aws/lambda/$$FN --follow --format short
 

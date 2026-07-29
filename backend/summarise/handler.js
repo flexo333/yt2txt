@@ -1,18 +1,23 @@
 import { GoogleGenAI } from "@google/genai";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, PutCommand, QueryCommand, ScanCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
-import { researchPerson, runPersonJob, getPerson, listPeople, resumeStalledJobs } from "./people.js";
+import { researchPerson, getPerson, listPeople } from "./people.js";
 import { getVideoMetadata } from "./youtube.js";
 import { canonicalUrlForId, canonicalYoutubeUrl, isVideoId, videoIdFrom } from "./youtube-url.js";
 import { normaliseSpeakers, parseSpeakerTrailer, stripSpeakerTrailer } from "./tags.js";
 import { extractSpeakersFromMarkdown } from "./speakers.js";
-import { runBackfill } from "./backfill.js";
 import {
   DEFAULT_MODEL, DEFAULT_FPS, MEDIA_RESOLUTION_LOW, fpsForDuration,
   SUMMARY_INDEX, SUMMARY_INDEX_PK, SUMMARY_INDEX_PK_VALUE,
 } from "./constants.js";
 import { buildModelChain } from "./people-pure.js";
+import { getAllowedModels } from "./models.js";
 import { generateWithFallback } from "./gemini.js";
+
+// The HTTP request core — every `GET`/`POST` the Function URL serves. Not a
+// Lambda entry point itself: `web.js` is, and it imports handleHttpRequest()
+// below. The internally-invoked jobs live on the worker function (worker.js)
+// and are unreachable from here.
 
 const SYSTEM_PROMPT = `Role: You are a no-nonsense Content Analyst. Your goal is to give me the "meat" of the video in plain English. Cut all fluff, repetitive points, and AI-sounding filler.
 
@@ -35,87 +40,6 @@ Tone: Clear, direct, and brief. Use plain Markdown. No fancy jargon.`;
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TABLE = process.env.DYNAMODB_TABLE;
 const SHARED_SECRET = process.env.SHARED_SECRET || "";
-
-const MODEL_CACHE_SUCCESS_TTL_MS = 24 * 60 * 60 * 1000;
-const MODEL_CACHE_FALLBACK_TTL_MS = 5 * 60 * 1000;
-
-// Used when ai.models.list() fails or returns nothing usable, so summarising
-// and request validation never hard-fail on a Google API hiccup.
-const FALLBACK_MODELS = [
-  { value: DEFAULT_MODEL, label: "Gemini Flash Latest" },
-  { value: "models/gemini-3-flash-preview", label: "Gemini 3 Flash" },
-  { value: "models/gemini-flash-lite-latest", label: "Gemini 3.1 Flash Lite" },
-  { value: "models/gemini-2.5-flash", label: "Gemini 2.5 Flash" },
-  { value: "models/gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite" },
-  { value: "models/gemma-4-31b-it", label: "Gemma 4 31B" },
-  { value: "models/gemma-4-26b-a4b-it", label: "Gemma 4 26B" },
-];
-
-function isWantedModel(name) {
-  const n = name.toLowerCase();
-  if (["tts", "image", "audio", "live"].some((bad) => n.includes(bad))) return false;
-  if (n.includes("gemma")) return true;
-  if (n.includes("gemini") && n.includes("flash")) return true;
-  return false;
-}
-
-// Pure: maps raw @google/genai Model objects to sorted [{ value, label }].
-// Exported so it can be smoke-tested without a network call.
-export function filterModels(rawModels) {
-  const wanted = (rawModels || []).filter(
-    (m) =>
-      m &&
-      typeof m.name === "string" &&
-      (m.supportedActions || []).includes("generateContent") &&
-      isWantedModel(m.name),
-  );
-  const toOption = (m) => ({ value: m.name, label: m.displayName || m.name });
-  const byNameDesc = (a, b) => b.value.localeCompare(a.value);
-  const gemini = wanted
-    .filter((m) => m.name.toLowerCase().includes("gemini"))
-    .map(toOption)
-    .sort(byNameDesc);
-  const gemma = wanted
-    .filter((m) => !m.name.toLowerCase().includes("gemini"))
-    .map(toOption)
-    .sort(byNameDesc);
-  return [...gemini, ...gemma];
-}
-
-let modelCache = { expires: 0, list: null };
-
-// Returns [{ value, label }] of allowed models. Cached in module scope:
-// 24h after a successful fetch, 5min after a fallback so it retries soon.
-async function getAllowedModels() {
-  if (modelCache.list && Date.now() < modelCache.expires) {
-    return modelCache.list;
-  }
-  let list;
-  let ttl;
-  try {
-    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY, apiVersion: "v1beta" });
-    const pager = await ai.models.list({});
-    const raw = [];
-    for await (const model of pager) {
-      raw.push(model);
-      if (raw.length >= 500) break;
-    }
-    list = filterModels(raw);
-    if (list.length === 0) {
-      console.warn("models.list returned no matching models, using fallback");
-      list = FALLBACK_MODELS;
-      ttl = MODEL_CACHE_FALLBACK_TTL_MS;
-    } else {
-      ttl = MODEL_CACHE_SUCCESS_TTL_MS;
-    }
-  } catch (err) {
-    console.error("models.list failed, using fallback", err);
-    list = FALLBACK_MODELS;
-    ttl = MODEL_CACHE_FALLBACK_TTL_MS;
-  }
-  modelCache = { expires: Date.now() + ttl, list };
-  return list;
-}
 
 function extractTitle(markdown) {
   const match = markdown.match(/^#{1,2}\s+(.+)/m);
@@ -442,25 +366,9 @@ async function getSummaryByVideo(id) {
   };
 }
 
-export async function handler(event, context) {
-  if (event && event.__personJob) {
-    const allowed = await getAllowedModels();
-    await runPersonJob(event.person, allowed.map((m) => m.value), context);
-    return { statusCode: 200, body: "ok" };
-  }
-
-  if (event && event.__backfill) {
-    const result = await runBackfill(event, context);
-    console.log("runBackfill", JSON.stringify(result));
-    return { statusCode: 200, body: JSON.stringify(result) };
-  }
-
-  if (event && event.__resumeJobs) {
-    const result = await resumeStalledJobs();
-    console.log("resumeStalledJobs", JSON.stringify(result));
-    return { statusCode: 200, body: JSON.stringify(result) };
-  }
-
+// Called by web.js once the event is known to be an HTTP request — this is the
+// whole public surface. Dispatch is by method, then by query string / body.
+export async function handleHttpRequest(event) {
   const method = event.requestContext?.http?.method || event.httpMethod || "GET";
 
   if (SHARED_SECRET) {
