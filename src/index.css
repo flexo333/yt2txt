@@ -1,6 +1,35 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+/* ── Base ────────────────────────────────────────────────────────────────────
+   Replaces Tailwind Preflight. Only the parts the CSS below silently relies on
+   are kept — the rest of Preflight was redundant with the `*` reset further
+   down or inert for the markup this app renders. */
+html {
+  -webkit-text-size-adjust: 100%;            /* no iOS text inflation */
+  -webkit-tap-highlight-color: transparent;  /* no grey tap flash on mobile */
+}
+
+/* Headings are sized per component (.site-header h1, .prose h1–h3,
+   .history-list-title). Unstyled ones — People's <h2>/<h3>, any h4+ coming out
+   of a markdown summary — must stay at body size, not UA bold. */
+h1, h2, h3, h4, h5, h6 { font-size: inherit; font-weight: inherit; }
+
+/* Markdown lists are indented by `.prose ul, .prose ol`, without UA markers. */
+ul, ol { list-style: none; }
+
+/* `.prose img` centres itself with `margin: 2rem auto`, which needs a block box. */
+img { display: block; max-width: 100%; height: auto; }
+
+/* Controls inherit page typography. `.btn` sets no line-height and
+   `.history-list-card` no font-size — the latter renders as an <a> on /history
+   and a <button> on /people and the two must match. */
+button, input, select, textarea {
+  font-family: inherit;
+  font-size: 100%;
+  line-height: inherit;
+  color: inherit;
+}
+
+/* Firefox fades placeholders; `.input-card input::placeholder` sets the colour. */
+::placeholder { opacity: 1; }
 
 /* ── Tokens ──────────────────────────────────────────────────────────────── */
 :root {

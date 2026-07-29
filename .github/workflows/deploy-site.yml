@@ -9,7 +9,6 @@ on:
       - "public/**"
       - "package.json"
       - "vite.config.js"
-      - "tailwind.config.js"
       - "backend/**"
       - "infra/**"
   workflow_dispatch:
