@@ -1,6 +1,7 @@
-// Pure, dependency-free helpers for the People research worker. No AWS SDK and
-// no @google/genai imports, so this module can be imported and smoke-tested
-// under local `node` (see people-pure.test.mjs).
+// Pure, dependency-free helpers shared by the People research worker, the
+// request path and the Gemini call loop (gemini.js). No AWS SDK and no
+// @google/genai imports, so this module can be imported and smoke-tested under
+// local `node` (see people-pure.test.mjs) — keep it that way.
 
 // ── Timing / sizing constants ────────────────────────────────────────────────
 export const MAX_VIDEOS = 8;                  // videos summarised per run
@@ -10,7 +11,7 @@ export const META_TIME_RESERVE_MS = 120_000;  // min Lambda time left to start m
 export const MAX_CONTINUATIONS = 12;          // self-invoke loop guard
 export const STALL_THRESHOLD_MS = 600_000;    // job considered stalled after this idle
 export const MAX_RETRIES_PER_MODEL = 3;       // per-model attempts in summariseVideo
-export const MAX_MODEL_ATTEMPTS = 4;          // models tried per video
+export const MAX_MODEL_ATTEMPTS = 4;          // models tried per generateContent
 
 // ── Job-state predicates ─────────────────────────────────────────────────────
 
@@ -40,8 +41,9 @@ export function isStalled(personRow, now) {
 
 // ── Model-chain helpers ──────────────────────────────────────────────────────
 
-// Ordered list of models to try for one video: the requested model first, then
-// the rest of the allowed list, deduped, capped at MAX_MODEL_ATTEMPTS.
+// The single ordered list of models to try for one generateContent call: the
+// requested model first, then the rest of the allowed list, deduped, capped at
+// MAX_MODEL_ATTEMPTS. Used by both the request path and the People worker.
 export function buildModelChain(requested, allowedModelValues) {
   const values = (allowedModelValues || []).filter(Boolean);
   const ordered = [requested, ...values.filter((v) => v !== requested)].filter(Boolean);
@@ -49,7 +51,8 @@ export function buildModelChain(requested, allowedModelValues) {
 }
 
 // True for errors where retrying (after backoff) or advancing to another model
-// may help. Mirrors handler.js's predicate of the same name, plus call-timeouts.
+// may help. The only copy — gemini.js classifies every failed call with it, on
+// the request path and the People path alike.
 export function isRetryableModelError(err) {
   const status = err?.status ?? err?.response?.status;
   if (status === 429 || status === 503 || status === 500) return true;
@@ -67,4 +70,21 @@ export function isRetryableModelError(err) {
 // Exponential backoff (ms) for retry attempt N (0-based), before jitter.
 export function backoffDelayMs(attempt) {
   return 2000 * Math.pow(2, attempt);
+}
+
+// ── Async helpers ────────────────────────────────────────────────────────────
+
+export function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Reject if `promise` does not settle in time. The default message says "timed
+// out", which isRetryableModelError treats as retryable — a hung model call is
+// worth another attempt. Callers outside that loop (speakers.js) pass their own.
+export function withTimeout(promise, ms, message = `generateContent timed out after ${ms}ms`) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }

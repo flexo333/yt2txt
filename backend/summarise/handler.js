@@ -7,6 +7,8 @@ import { normaliseSpeakers, parseSpeakerTrailer, stripSpeakerTrailer } from "./t
 import { extractSpeakersFromMarkdown } from "./speakers.js";
 import { runBackfill } from "./backfill.js";
 import { DEFAULT_MODEL, DEFAULT_FPS, MEDIA_RESOLUTION_LOW, fpsForDuration } from "./constants.js";
+import { buildModelChain } from "./people-pure.js";
+import { generateWithFallback } from "./gemini.js";
 
 const SYSTEM_PROMPT = `Role: You are a no-nonsense Content Analyst. Your goal is to give me the "meat" of the video in plain English. Cut all fluff, repetitive points, and AI-sounding filler.
 
@@ -113,30 +115,6 @@ async function getAllowedModels() {
   return list;
 }
 
-const MAX_MODEL_ATTEMPTS = 4;
-
-// Copy of people.js's predicate (kept separate so people.js's own fallback
-// stays untouched). True for errors where trying a different model may help.
-function isRetryableModelError(err) {
-  const status = err?.status ?? err?.response?.status;
-  if (status === 429 || status === 503 || status === 500) return true;
-  const msg = String(err?.message || "").toLowerCase();
-  return msg.includes("resource_exhausted")
-    || msg.includes("quota")
-    || msg.includes("rate limit")
-    || msg.includes("unavailable")
-    || msg.includes("overloaded")
-    || msg.includes("high demand");
-}
-
-// Pure: ordered models to try — the requested model first, then the rest of
-// the allowed list, capped at MAX_MODEL_ATTEMPTS. Exported for smoke-testing.
-export function buildModelChain(requested, allowedModels) {
-  const values = (allowedModels || []).map((m) => m.value);
-  const ordered = [requested, ...values.filter((v) => v !== requested)];
-  return ordered.slice(0, MAX_MODEL_ATTEMPTS);
-}
-
 function extractTitle(markdown) {
   const match = markdown.match(/^#{1,2}\s+(.+)/m);
   return match ? match[1].trim() : "Untitled";
@@ -212,43 +190,40 @@ async function summarise(url, requestedModel = DEFAULT_MODEL) {
   const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY, apiVersion: "v1beta" });
   const videoId = extractVideoId(url);
   const promptText = `${SYSTEM_PROMPT}\n\nVideo URL: ${url}\nVideo ID: ${videoId}`;
-  const chain = buildModelChain(requestedModel, await getAllowedModels());
+  const allowedModels = await getAllowedModels();
+  const chain = buildModelChain(requestedModel, allowedModels.map((m) => m.value));
   const { fps, videoTitle, channelTitle, channelId } = await lookupVideoMeta(videoId);
 
-  let markdown;
-  let usedModel;
-  let lastErr;
-  for (const candidate of chain) {
-    try {
-      const response = await ai.models.generateContent({
-        model: candidate,
-        contents: [{
-          parts: [
-            { fileData: { fileUri: url }, videoMetadata: { fps } },
-            { text: promptText },
-          ],
-        }],
-        config: { mediaResolution: MEDIA_RESOLUTION_LOW },
-      });
-      console.log(`summarise tokens: model=${candidate} fps=${fps} total=${response.usageMetadata?.totalTokenCount ?? "?"}`);
-      markdown = response.text;
-      usedModel = candidate;
-      break;
-    } catch (err) {
-      lastErr = err;
-      if (!isRetryableModelError(err)) throw err;
-      console.warn(`model ${candidate} failed (${err?.status || ""} ${err?.message || ""}), trying next`);
-    }
-  }
+  // One try per model, no backoff and no timeout: someone is waiting on this
+  // response, so a quota error moves straight to the next model and anything
+  // else fails the request outright.
+  const outcome = await generateWithFallback(ai, {
+    chain,
+    contents: [{
+      parts: [
+        { fileData: { fileUri: url }, videoMetadata: { fps } },
+        { text: promptText },
+      ],
+    }],
+    config: { mediaResolution: MEDIA_RESOLUTION_LOW },
+    attempts: 1,
+    throwOnNonRetryable: true,
+    onResponse: (response, model) =>
+      console.log(`summarise tokens: model=${model} fps=${fps} total=${response.usageMetadata?.totalTokenCount ?? "?"}`),
+    onRetryableError: (err, model) =>
+      console.warn(`model ${model} failed (${err?.status || ""} ${err?.message || ""}), trying next`),
+  });
 
-  if (!usedModel) {
-    console.error("all models exhausted for summarise", lastErr);
+  if (!outcome.ok) {
+    console.error("all models exhausted for summarise", outcome.error);
     return {
       statusCode: 503,
       headers: JSON_HEADERS,
       body: JSON.stringify({ error: "all models are currently rate-limited — try again shortly" }),
     };
   }
+  const markdown = outcome.text;
+  const usedModel = outcome.model;
 
   // The speaker trailer is metadata, so it is stripped before the summary is
   // stored. If the model skipped it, re-read the finished summary with a cheap

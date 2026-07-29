@@ -14,9 +14,9 @@ import {
   canStartMeta,
   isStalled,
   buildModelChain,
-  isRetryableModelError,
   backoffDelayMs,
 } from "./people-pure.js";
+import { generateWithFallback } from "./gemini.js";
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const lambda = new LambdaClient({});
@@ -65,19 +65,6 @@ export function normalisePerson(name) {
 }
 
 // ── small async utilities ────────────────────────────────────────────────────
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-// Reject with a retryable "timed out" error if `promise` does not settle in time.
-function withTimeout(promise, ms) {
-  let timer;
-  const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`generateContent timed out after ${ms}ms`)), ms);
-  });
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
-}
 
 async function selfInvoke(payload) {
   await lambda.send(new InvokeCommand({
@@ -192,38 +179,28 @@ function buildVideoContents(video, displayName, fps) {
 
 // Summarise one video, walking the model chain; each model retried with backoff
 // on a retryable error. Returns { markdown, model }. Throws when all exhausted.
+// Nobody is waiting on this call, so unlike the request path it is patient:
+// several tries per model, a timeout so a hung call cannot eat the run, and a
+// non-retryable error only costs this model, not the whole video.
 async function summariseVideo(ai, video, displayName, modelChain) {
   // durationSeconds is written by searchAndQueueVideos, so no extra API call.
   const fps = fpsForDuration(video.durationSeconds);
-  const contents = buildVideoContents(video, displayName, fps);
-  let lastErr;
-  for (const model of modelChain) {
-    for (let attempt = 0; attempt < MAX_RETRIES_PER_MODEL; attempt++) {
-      try {
-        const response = await withTimeout(
-          ai.models.generateContent({
-            model,
-            contents,
-            config: { mediaResolution: MEDIA_RESOLUTION_LOW },
-          }),
-          VIDEO_CALL_TIMEOUT_MS,
-        );
-        console.log(`summariseVideo tokens: ${video.videoId} model=${model} fps=${fps} total=${response.usageMetadata?.totalTokenCount ?? "?"}`);
-        const markdown = response.text
-          || response.candidates?.[0]?.content?.parts?.map((p) => p.text).filter(Boolean).join("\n")
-          || "";
-        if (!markdown) throw new Error("empty response");
-        return { markdown, model };
-      } catch (err) {
-        lastErr = err;
-        if (!isRetryableModelError(err)) break;
-        if (attempt < MAX_RETRIES_PER_MODEL - 1) {
-          await sleep(backoffDelayMs(attempt) + Math.floor(Math.random() * 1000));
-        }
-      }
-    }
-  }
-  throw lastErr || new Error("summariseVideo: all models exhausted");
+  const outcome = await generateWithFallback(ai, {
+    chain: modelChain,
+    contents: buildVideoContents(video, displayName, fps),
+    config: { mediaResolution: MEDIA_RESOLUTION_LOW },
+    attempts: MAX_RETRIES_PER_MODEL,
+    backoffMs: (attempt) => backoffDelayMs(attempt) + Math.floor(Math.random() * 1000),
+    timeoutMs: VIDEO_CALL_TIMEOUT_MS,
+    extractText: (response) => response.text
+      || response.candidates?.[0]?.content?.parts?.map((p) => p.text).filter(Boolean).join("\n")
+      || "",
+    requireText: true,
+    onResponse: (response, model) =>
+      console.log(`summariseVideo tokens: ${video.videoId} model=${model} fps=${fps} total=${response.usageMetadata?.totalTokenCount ?? "?"}`),
+  });
+  if (!outcome.ok) throw outcome.error || new Error("summariseVideo: all models exhausted");
+  return { markdown: outcome.text, model: outcome.model };
 }
 
 // ── meta synthesis ───────────────────────────────────────────────────────────
