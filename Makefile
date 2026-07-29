@@ -35,6 +35,10 @@ dev: ## Start Vite dev server → http://localhost:5173
 build: install ## Build for production (outputs to dist/)
 	docker compose run --rm node npm run build
 
+.PHONY: test
+test: ## Run the pure-module smoke tests (node --test walks the tree; no args)
+	docker compose run --rm node node --test
+
 .PHONY: infra-preview
 infra-preview: build-lambda ## Preview infra changes
 	docker compose build pulumi

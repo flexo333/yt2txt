@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { test } from "node:test";
 import {
   pickPendingVideos,
   canStartVideo,
@@ -13,14 +14,7 @@ import {
   MAX_MODEL_ATTEMPTS,
 } from "./people-pure.js";
 
-let passed = 0;
-function check(name, fn) {
-  fn();
-  passed++;
-  console.log(`ok - ${name}`);
-}
-
-check("pickPendingVideos keeps only pending rows", () => {
+test("pickPendingVideos keeps only pending rows", () => {
   const rows = [
     { videoId: "a", status: "pending" },
     { videoId: "b", status: "done" },
@@ -31,7 +25,7 @@ check("pickPendingVideos keeps only pending rows", () => {
   assert.deepEqual(pickPendingVideos(null), []);
 });
 
-check("canStartVideo / canStartMeta respect their reserves", () => {
+test("canStartVideo / canStartMeta respect their reserves", () => {
   assert.equal(canStartVideo(VIDEO_TIME_RESERVE_MS + 1), true);
   assert.equal(canStartVideo(VIDEO_TIME_RESERVE_MS), false);
   assert.equal(canStartVideo(1000), false);
@@ -39,7 +33,7 @@ check("canStartVideo / canStartMeta respect their reserves", () => {
   assert.equal(canStartMeta(META_TIME_RESERVE_MS), false);
 });
 
-check("isStalled flags only idle active jobs", () => {
+test("isStalled flags only idle active jobs", () => {
   const now = 1_000_000_000_000;
   assert.equal(isStalled({ status: "running", lastProgressAt: now - STALL_THRESHOLD_MS - 1 }, now), true);
   assert.equal(isStalled({ status: "running", lastProgressAt: now - 1000 }, now), false);
@@ -48,7 +42,7 @@ check("isStalled flags only idle active jobs", () => {
   assert.equal(isStalled(null, now), false);
 });
 
-check("buildModelChain puts requested first, dedupes, caps at MAX_MODEL_ATTEMPTS", () => {
+test("buildModelChain puts requested first, dedupes, caps at MAX_MODEL_ATTEMPTS", () => {
   const allowed = ["m/a", "m/b", "m/c", "m/d", "m/e"];
   assert.deepEqual(buildModelChain("m/c", allowed), ["m/c", "m/a", "m/b", "m/d"]);
   assert.equal(buildModelChain("m/c", allowed).length, MAX_MODEL_ATTEMPTS);
@@ -56,7 +50,7 @@ check("buildModelChain puts requested first, dedupes, caps at MAX_MODEL_ATTEMPTS
   assert.deepEqual(buildModelChain("m/a", []), ["m/a"]);
 });
 
-check("isRetryableModelError classifies quota / 5xx / timeout as retryable", () => {
+test("isRetryableModelError classifies quota / 5xx / timeout as retryable", () => {
   assert.equal(isRetryableModelError({ status: 429 }), true);
   assert.equal(isRetryableModelError({ status: 503 }), true);
   assert.equal(isRetryableModelError({ message: "RESOURCE_EXHAUSTED" }), true);
@@ -65,10 +59,8 @@ check("isRetryableModelError classifies quota / 5xx / timeout as retryable", () 
   assert.equal(isRetryableModelError({ status: 404 }), false);
 });
 
-check("backoffDelayMs grows exponentially", () => {
+test("backoffDelayMs grows exponentially", () => {
   assert.equal(backoffDelayMs(0), 2000);
   assert.equal(backoffDelayMs(1), 4000);
   assert.equal(backoffDelayMs(2), 8000);
 });
-
-console.log(`\n${passed} checks passed`);

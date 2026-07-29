@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`yt2txt` (yt2txt.willbright.link) — a Vite + React SPA that summarises YouTube videos by calling a single AWS Lambda backed by Google Gemini. Summaries are persisted in DynamoDB and listed as history. There is no test framework and no linter configured.
+`yt2txt` (yt2txt.willbright.link) — a Vite + React SPA that summarises YouTube videos by calling a single AWS Lambda backed by Google Gemini. Summaries are persisted in DynamoDB and listed as history. Tests are Node's built-in runner over a handful of pure-module smoke tests (`make test`); there is no linter configured.
 
 ## Commands
 
@@ -14,12 +14,13 @@ Everything runs via `docker compose` services invoked through the `Makefile` —
 - `make icons` — regenerate `public/icons/*.png` from `scripts/generate-icons.mjs` (only needed if `public/yt2txt.svg` changes)
 - `make dev` — Vite dev server on `http://localhost:5173` (needs `VITE_LAMBDA_URL` in `.env` to hit a real Lambda)
 - `make build` — Vite production build into `dist/`
+- `make test` — runs `node --test` (Node's built-in runner) over the four pure-module smoke tests: `src/share.test.mjs`, `backend/summarise/{tags,people-pure,media-pure}.test.mjs`. Pass **no path arguments** — bare `node --test` walks the tree, matches `*.test.mjs`, and skips `node_modules`; naming directories makes the runner try to import them as test modules and fail. The tested modules are deliberately dependency-free (no `handler.js`, no AWS SDK) so they run outside Lambda; keep them that way. Both deploy workflows run `node --test` before deploying.
 - `make build-lambda` — install `backend/summarise/node_modules/` under `linux/amd64` so the deps work inside Lambda; **must run before any `infra-*` command that packages the Lambda**
 - `make infra-preview` / `make infra-up` / `make infra-destroy` / `make infra-outputs`
 - `make infra-refresh` — resyncs Pulumi state from AWS; use this when `api_url` drifts (see "Function URL gotcha" below)
 - `make deploy` — rebuilds with live `VITE_LAMBDA_URL` from Pulumi outputs, syncs `dist/` to S3, invalidates CloudFront
 
-There is no `make test` / `make lint` — don't invent one.
+There is no `make lint` — don't invent one.
 
 ## Architecture
 
@@ -31,7 +32,7 @@ Three layers, each with one source of truth:
 - `manifest.json` declares `display: standalone`, the icon set, shortcuts, and a **`share_target`** posting to `/share` via **GET** (no server round-trip needed — the SPA reads the query string). `launch_handler.client_mode: navigate-existing` reuses an already-open window.
 - `/share?url=&text=&title=` is a route in `App.jsx`. `shareTargetUrl()` scans `url` → `text` → `title` for the first YouTube link (Android apps put it in different fields and often wrap it in prose), then auto-summarises with `SHARE_MODEL` (= `models/gemini-flash-latest`) and `navigate(..., { replace: true })`s to the summary so Back doesn't re-fire the share.
 - `canonicalYoutubeUrl()` rewrites shorts/live/embed/`m.`/`music.` links into `https://www.youtube.com/watch?v=<id>` — the Lambda's `YOUTUBE_URL_RE` only accepts `watch?v=` and `youtu.be`, so a raw shorts link would 400. It also strips `?si=` share tracking so one video is one DynamoDB row. Applied to both the share flow and the manual Generate button.
-- `src/share.js` is dependency-free and pure; `node src/share.test.mjs` smoke-tests it (same convention as `people-pure.test.mjs`).
+- `src/share.js` is dependency-free and pure; `src/share.test.mjs` smoke-tests it under `make test` (same convention as `people-pure.test.mjs`).
 - `public/sw.js` is hand-written — no `vite-plugin-pwa`, no precache manifest to keep in sync. Navigations are network-first with the cached `/` shell as the offline fallback; `/assets/*` (content-hashed) is cache-first; cross-origin requests (the Lambda) and all non-GETs are never intercepted. Bump `VERSION` in it to invalidate every client's cache.
 - Registered by `src/registerServiceWorker.js`, **production only** — in `make dev` a service worker would sit in front of Vite HMR.
 - iOS has no Web Share Target support; the `apple-*` meta tags in `index.html` still give a standalone home-screen app there.
@@ -48,13 +49,13 @@ Three layers, each with one source of truth:
 A summary row is `{ url, title, markdown, date, createdAt, model, videoTitle, channelTitle, channelId, speakers[] }`. `title` is the model's own plain-English title (scraped from the markdown by `extractTitle`); `videoTitle`/`channelTitle` are the authoritative YouTube ones, fetched by the same `getVideoMetadata()` call that already looks up duration for the fps ladder. All four newer fields are best-effort — rows predating them read back as `null`/`[]`.
 
 Speaker-tag modules:
-- `backend/summarise/tags.js` — dependency-free pure helpers (trailer parsing/stripping, name normalisation); smoke-tested by `tags.test.mjs` under plain `node`.
+- `backend/summarise/tags.js` — dependency-free pure helpers (trailer parsing/stripping, name normalisation); smoke-tested by `tags.test.mjs` under `make test`.
 - `backend/summarise/speakers.js` — the text-only extraction fallback, used when a model ignores the trailer contract and by the backfill.
 - `backend/summarise/backfill.js` — one-shot enrichment of pre-existing rows. Invoke the Lambda directly with `{"__backfill": true}`; `"dryRun": true` counts what would change without writing or calling Gemini. Idempotent: a row is done once it has the attribute, so re-running only retries what failed — a failed extraction writes nothing precisely so it stays eligible. If it returns `done: false`, re-invoke with the returned `nextStartKey` as `startKey`.
 
 Person-research modules:
 - `backend/summarise/youtube.js` — YouTube Data API v3 search + metadata (needs `YOUTUBE_API_KEY`).
-- `backend/summarise/people-pure.js` — dependency-free pure helpers (timing constants, model-chain building, job-state predicates); smoke-tested by `people-pure.test.mjs` under plain `node`.
+- `backend/summarise/people-pure.js` — dependency-free pure helpers (timing constants, model-chain building, job-state predicates); smoke-tested by `people-pure.test.mjs` under `make test`.
 - `backend/summarise/people.js` — synchronous, resumable job runner. Searches the last 6 months, then summarises up to 8 videos one at a time with `ai.models.generateContent`, persisting each per-video row as it completes.
 - `runPersonJob` is idempotent and chunked: before each video it checks `context.getRemainingTimeInMillis()`, and when Lambda time is low it self-invokes a continuation (`{ __personJob: true, person }`) and returns. Any number of videos can be processed without hitting the 900 s Lambda timeout.
 - Three triggers call `runPersonJob`: the initial research request, its own time-budget continuations, and the safety-net resumer.

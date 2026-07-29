@@ -1,19 +1,13 @@
-// Smoke tests for the pure share-target helpers. Run with plain node:
-//   node src/share.test.mjs
+// Smoke tests for the pure share-target helpers. Run with the node test runner:
+//   node --test
 
 import assert from 'node:assert/strict';
+import { test } from 'node:test';
 import { videoIdFrom, canonicalYoutubeUrl, findYoutubeUrl, shareTargetUrl } from './share.js';
 
 const CANONICAL = 'https://www.youtube.com/watch?v=dQw4w9WgXcQ';
 
-let passed = 0;
-function check(name, fn) {
-  fn();
-  passed++;
-  console.log(`ok - ${name}`);
-}
-
-check('videoIdFrom handles every YouTube URL shape', () => {
+test('videoIdFrom handles every YouTube URL shape', () => {
   const id = 'dQw4w9WgXcQ';
   assert.equal(videoIdFrom('https://www.youtube.com/watch?v=dQw4w9WgXcQ'), id);
   assert.equal(videoIdFrom('https://youtube.com/watch?v=dQw4w9WgXcQ&list=PLabc'), id);
@@ -26,7 +20,7 @@ check('videoIdFrom handles every YouTube URL shape', () => {
   assert.equal(videoIdFrom('  youtu.be/dQw4w9WgXcQ  '), id);
 });
 
-check('videoIdFrom rejects non-YouTube and malformed input', () => {
+test('videoIdFrom rejects non-YouTube and malformed input', () => {
   assert.equal(videoIdFrom('https://vimeo.com/12345'), null);
   assert.equal(videoIdFrom('https://notyoutube.com/watch?v=dQw4w9WgXcQ'), null);
   assert.equal(videoIdFrom('https://www.youtube.com/watch?v=tooshort'), null);
@@ -38,13 +32,13 @@ check('videoIdFrom rejects non-YouTube and malformed input', () => {
   assert.equal(videoIdFrom(42), null);
 });
 
-check('canonicalYoutubeUrl normalises to the form the Lambda accepts', () => {
+test('canonicalYoutubeUrl normalises to the form the Lambda accepts', () => {
   assert.equal(canonicalYoutubeUrl('https://youtu.be/dQw4w9WgXcQ?si=abc'), CANONICAL);
   assert.equal(canonicalYoutubeUrl('https://www.youtube.com/shorts/dQw4w9WgXcQ'), CANONICAL);
   assert.equal(canonicalYoutubeUrl('https://vimeo.com/12345'), null);
 });
 
-check('findYoutubeUrl digs a link out of shared free text', () => {
+test('findYoutubeUrl digs a link out of shared free text', () => {
   assert.equal(
     findYoutubeUrl('Check this out https://youtu.be/dQw4w9WgXcQ?si=xyz it is great'),
     CANONICAL,
@@ -55,7 +49,7 @@ check('findYoutubeUrl digs a link out of shared free text', () => {
   assert.equal(findYoutubeUrl('https://example.com/a https://youtu.be/dQw4w9WgXcQ'), CANONICAL);
 });
 
-check('shareTargetUrl prefers url, then text, then title', () => {
+test('shareTargetUrl prefers url, then text, then title', () => {
   const params = (obj) => new URLSearchParams(obj);
   assert.equal(
     shareTargetUrl(params({ url: 'https://youtu.be/dQw4w9WgXcQ', text: 'https://youtu.be/aaaaaaaaaaa' })),
@@ -76,5 +70,3 @@ check('shareTargetUrl prefers url, then text, then title', () => {
   assert.equal(shareTargetUrl(params({})), null);
   assert.equal(shareTargetUrl(null), null);
 });
-
-console.log(`\n${passed} checks passed`);
