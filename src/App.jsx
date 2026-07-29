@@ -182,6 +182,7 @@ const BrightBlogApp = () => {
 
   const route = summaryId ? (
     <Summary
+      id={summaryId}
       item={detailItem}
       historyLoaded={historyLoaded}
       modelLabel={modelLabel}

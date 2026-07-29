@@ -1,12 +1,15 @@
 import { GoogleGenAI } from "@google/genai";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, PutCommand, ScanCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, PutCommand, QueryCommand, ScanCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
 import { researchPerson, runPersonJob, getPerson, listPeople, resumeStalledJobs } from "./people.js";
 import { extractVideoId, getVideoMetadata } from "./youtube.js";
 import { normaliseSpeakers, parseSpeakerTrailer, stripSpeakerTrailer } from "./tags.js";
 import { extractSpeakersFromMarkdown } from "./speakers.js";
 import { runBackfill } from "./backfill.js";
-import { DEFAULT_MODEL, DEFAULT_FPS, MEDIA_RESOLUTION_LOW, fpsForDuration } from "./constants.js";
+import {
+  DEFAULT_MODEL, DEFAULT_FPS, MEDIA_RESOLUTION_LOW, fpsForDuration,
+  SUMMARY_INDEX, SUMMARY_INDEX_PK, SUMMARY_INDEX_PK_VALUE,
+} from "./constants.js";
 import { buildModelChain } from "./people-pure.js";
 import { generateWithFallback } from "./gemini.js";
 
@@ -251,6 +254,10 @@ async function summarise(url, requestedModel = DEFAULT_MODEL) {
     channelTitle,
     channelId,
     speakers,
+    // Constant partition key of the byCreatedAt index — this is the only place
+    // new rows get it, which is what makes the index a complete feed. It is an
+    // index key, not data: neither summaryPayload() nor listRow() returns it.
+    [SUMMARY_INDEX_PK]: SUMMARY_INDEX_PK_VALUE,
   };
 
   try {
@@ -288,23 +295,148 @@ async function listModels() {
   };
 }
 
-async function listSummaries() {
-  const result = await ddb.send(new ScanCommand({ TableName: TABLE, Limit: 100 }));
-  const summaries = (result.Items || [])
-    .sort((a, b) => b.createdAt - a.createdAt)
-    .slice(0, 50)
-    .map(({ url, title, date, createdAt, markdown, model, videoTitle, channelTitle, speakers }) => ({
-      url, title, date, createdAt, model,
-      videoTitle: videoTitle || null,
-      channelTitle: channelTitle || null,
-      speakers: speakers || [],
-      summary: (markdown || '').slice(0, 8000),
-    }));
+const LIST_LIMIT = 50;
 
+// The list cards render ~200 characters of the summary, so that is all the list
+// response carries. Shipping whole summaries (up to 8 KB × 50 rows) made every
+// cold load pay for the entire archive just so the detail page could read the
+// markdown out of memory; it fetches the full row from `?video=` instead.
+const LIST_MARKDOWN_CHARS = 300;
+
+// Whitelists what reaches the client: an attribute added to the item is
+// invisible to `GET /` until it is added here *and* to summaryPayload().
+// `gsi1pk` is deliberately absent — it is an index key, not data.
+function listRow({ url, title, date, createdAt, markdown, model, videoTitle, channelTitle, speakers }) {
+  const full = markdown || "";
+  const summary = full.slice(0, LIST_MARKDOWN_CHARS);
+  return {
+    url, title, date, createdAt, model,
+    videoTitle: videoTitle || null,
+    channelTitle: channelTitle || null,
+    speakers: speakers || [],
+    summary,
+    // Tells the detail page the markdown it has is a snippet, so it fetches the
+    // real row before rendering or offering a download.
+    ...(summary.length < full.length ? { truncated: true } : {}),
+  };
+}
+
+// The real answer: the index is ordered by createdAt, so "newest 50" is exact
+// and costs one Query of 50 items however large the table gets.
+async function queryRecent() {
+  const result = await ddb.send(new QueryCommand({
+    TableName: TABLE,
+    IndexName: SUMMARY_INDEX,
+    KeyConditionExpression: "#pk = :pk",
+    ExpressionAttributeNames: { "#pk": SUMMARY_INDEX_PK },
+    ExpressionAttributeValues: { ":pk": SUMMARY_INDEX_PK_VALUE },
+    ScanIndexForward: false,
+    Limit: LIST_LIMIT,
+  }));
+  return result.Items || [];
+}
+
+// The pre-index behaviour, kept only as a fallback: Limit caps items evaluated,
+// not matched, and Scan has no ordering guarantee, so past 100 rows this is an
+// arbitrary subset sorted among itself.
+async function scanRecent() {
+  const result = await ddb.send(new ScanCommand({ TableName: TABLE, Limit: 100 }));
+  return (result.Items || [])
+    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+    .slice(0, LIST_LIMIT);
+}
+
+// ── dual read, deletable ─────────────────────────────────────────────────────
+// The Query is correct but only sees rows carrying `gsi1pk`, and the index does
+// not exist at all until the Pulumi change is applied. Both gaps are transient,
+// so the Scan covers them: it runs when the Query fails outright, and tops up a
+// short page while the index is still sparse (a full page needs no help — those
+// 50 rows are the newest by definition).
+//
+// DELETE everything below the Query once the backfill is confirmed complete:
+//   aws dynamodb describe-table --table-name yt2txt-summaries \
+//     --query '{table: Table.ItemCount, index: Table.GlobalSecondaryIndexes[0].ItemCount}'
+// When the two counts match, scanRecent() and this merge are dead weight.
+async function recentSummaries() {
+  let queried = null;
+  try {
+    queried = await queryRecent();
+  } catch (err) {
+    console.warn(`${SUMMARY_INDEX} query failed, falling back to scan:`, err?.name || err);
+  }
+  if (queried && queried.length >= LIST_LIMIT) return queried;
+
+  const scanned = await scanRecent();
+  if (!queried || queried.length === 0) return scanned;
+
+  const byUrl = new Map(scanned.map((row) => [row.url, row]));
+  for (const row of queried) byUrl.set(row.url, row);
+  return [...byUrl.values()]
+    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+    .slice(0, LIST_LIMIT);
+}
+
+async function listSummaries() {
+  const rows = await recentSummaries();
   return {
     statusCode: 200,
     headers: JSON_HEADERS,
-    body: JSON.stringify({ summaries }),
+    body: JSON.stringify({ summaries: rows.map(listRow) }),
+  };
+}
+
+const VIDEO_ID_RE = /^[\w-]{11}$/;
+
+// The table is keyed by the raw URL the user submitted, so a video id is not a
+// key — but the canonical watch URL is what the frontend and the share flow
+// send, so it is worth one GetItem before falling back to a full Scan.
+async function findByVideoId(id) {
+  const canonical = `https://www.youtube.com/watch?v=${id}`;
+  const direct = await ddb.send(new GetCommand({ TableName: TABLE, Key: { url: canonical } }));
+  if (direct.Item) return direct.Item;
+
+  // `youtu.be/<id>`, tracking-parameter suffixes, anything else that stored a
+  // different URL for the same video. `contains` narrows server-side; the
+  // authoritative match is extractVideoId, which is what built the link.
+  let startKey;
+  do {
+    const page = await ddb.send(new ScanCommand({
+      TableName: TABLE,
+      FilterExpression: "contains(#u, :id)",
+      ExpressionAttributeNames: { "#u": "url" },
+      ExpressionAttributeValues: { ":id": id },
+      ...(startKey ? { ExclusiveStartKey: startKey } : {}),
+    }));
+    const match = (page.Items || []).find((row) => extractVideoId(row.url) === id);
+    if (match) return match;
+    startKey = page.LastEvaluatedKey;
+  } while (startKey);
+
+  return null;
+}
+
+// GET ?video=<id> → one full summary. This is what makes /summary/<videoId>
+// permalinks outlive the newest-50 window the list response covers.
+async function getSummaryByVideo(id) {
+  if (!VIDEO_ID_RE.test(id)) {
+    return {
+      statusCode: 400,
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ error: "invalid video id" }),
+    };
+  }
+  const item = await findByVideoId(id);
+  if (!item) {
+    return {
+      statusCode: 404,
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ error: "not found" }),
+    };
+  }
+  return {
+    statusCode: 200,
+    headers: JSON_HEADERS,
+    body: JSON.stringify(summaryPayload(item, item.url)),
   };
 }
 
@@ -389,6 +521,9 @@ export async function handler(event, context) {
       }
       if (qs.person) {
         return await getPerson(qs.person);
+      }
+      if (qs.video) {
+        return await getSummaryByVideo(qs.video);
       }
       return await listSummaries();
     }

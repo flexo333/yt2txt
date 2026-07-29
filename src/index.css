@@ -211,6 +211,11 @@ a:hover { color: var(--link-hover); }
   border: 1px solid var(--border);
 }
 .btn--secondary:hover { background: var(--border-light); }
+.btn--secondary:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+}
+.btn--secondary:disabled:hover { background: var(--surface); }
 
 /* ── Empty state ─────────────────────────────────────────────────────────── */
 .empty-state {

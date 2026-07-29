@@ -61,12 +61,30 @@ site = StaticSite(
 )
 
 # ── DynamoDB tables ───────────────────────────────────────────────────────────
+# byCreatedAt: the history feed. The table is keyed by url, so "the newest 50"
+# has to come from an index — a Scan returns rows in hash order. Every summary
+# carries the same partition key (gsi1pk = "SUMMARY"), which makes one hot
+# partition; at this table's size and write rate that is the point, not a flaw.
 table = aws.dynamodb.Table(
     "summaries",
     name="yt2txt-summaries",
     billing_mode="PAY_PER_REQUEST",
     hash_key="url",
-    attributes=[aws.dynamodb.TableAttributeArgs(name="url", type="S")],
+    attributes=[
+        aws.dynamodb.TableAttributeArgs(name="url", type="S"),
+        aws.dynamodb.TableAttributeArgs(name="gsi1pk", type="S"),
+        aws.dynamodb.TableAttributeArgs(name="createdAt", type="N"),
+    ],
+    global_secondary_indexes=[
+        aws.dynamodb.TableGlobalSecondaryIndexArgs(
+            name="byCreatedAt",
+            hash_key="gsi1pk",
+            range_key="createdAt",
+            # ALL: the list response reads title/date/model/speakers/markdown,
+            # so a KEYS_ONLY index would need a GetItem per row.
+            projection_type="ALL",
+        ),
+    ],
 )
 
 people_table = aws.dynamodb.Table(
@@ -123,7 +141,11 @@ aws.iam.RolePolicy(
                     "dynamodb:Scan",
                     "dynamodb:Query",
                 ],
-                "Resource": arns,
+                # Querying a GSI is authorised against the index ARN, not the
+                # table's, so both are listed (only yt2txt-summaries has one
+                # today — the wildcard keeps a future index from needing an
+                # IAM change to be readable).
+                "Resource": arns + [f"{arn}/index/*" for arn in arns],
             }],
         })
     ),

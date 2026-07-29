@@ -3,13 +3,15 @@ import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, ScanCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { extractVideoId, getVideoMetadata } from "./youtube.js";
 import { extractSpeakersFromMarkdown } from "./speakers.js";
-import { DEFAULT_MODEL } from "./constants.js";
+import { DEFAULT_MODEL, SUMMARY_INDEX_PK, SUMMARY_INDEX_PK_VALUE } from "./constants.js";
 
 // One-shot enrichment of summaries written before channel/speaker metadata
 // existed. Invoke the Lambda directly with { "__backfill": true }; add
 // "dryRun": true to see what would change without writing.
 //
-// Two independent passes per row, each skipped if the row already has the data:
+// Three independent passes per row, each skipped if the row already has the data:
+//   - index key:     the byCreatedAt partition key (+ a createdAt for rows old
+//                    enough to predate it), so the row appears in the feed
 //   - channel/title: YouTube API, batched 50 ids per call (1 quota unit each)
 //   - speakers:      the same text-only extraction the request path falls back
 //                    to, run over the summary markdown already in the row
@@ -30,6 +32,23 @@ const TIME_RESERVE_MS = 60 * 1000;
 
 const DEFAULT_ROW_LIMIT = 500;
 
+// A GSI is sparse: a row missing either index key is simply absent from it.
+// Both keys are checked, since a row written before `createdAt` existed would
+// otherwise be stamped and still never appear in the feed.
+function needsIndexKey(row) {
+  return row[SUMMARY_INDEX_PK] !== SUMMARY_INDEX_PK_VALUE || typeof row.createdAt !== "number";
+}
+
+// `date` is the YYYY-MM-DD the row was written; midnight on that day is close
+// enough to order a pre-createdAt row against its neighbours. 0 (epoch) sorts
+// such a row to the very bottom of the feed, which is where an undateable row
+// belongs.
+function createdAtFor(row) {
+  if (typeof row.createdAt === "number") return row.createdAt;
+  const parsed = Date.parse(row.date || "");
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
 function needsVideoMeta(row) {
   return !row.channelTitle && !row.videoTitle;
 }
@@ -46,6 +65,26 @@ async function scanPage(startKey) {
     // first page has no key to hand back and must start from the beginning.
     ...(startKey ? { ExclusiveStartKey: startKey } : {}),
   }));
+}
+
+// Put every row into the byCreatedAt index. Pure DynamoDB — no API quota and no
+// tokens — so it runs over the whole page in one go rather than being metered
+// like the speaker pass. Idempotent: the write leaves both index keys present,
+// so needsIndexKey() skips the row on every later run.
+async function backfillIndexKeys(rows, { dryRun }) {
+  let updated = 0;
+  for (const row of rows) {
+    updated++;
+    if (dryRun) continue;
+    await ddb.send(new UpdateCommand({
+      TableName: TABLE,
+      Key: { url: row.url },
+      UpdateExpression: "SET #pk = :pk, #ca = :ca",
+      ExpressionAttributeNames: { "#pk": SUMMARY_INDEX_PK, "#ca": "createdAt" },
+      ExpressionAttributeValues: { ":pk": SUMMARY_INDEX_PK_VALUE, ":ca": createdAtFor(row) },
+    }));
+  }
+  return updated;
 }
 
 // Fill channelTitle/videoTitle/channelId for a batch of rows in one API call.
@@ -122,7 +161,7 @@ export async function runBackfill(event = {}, context) {
   const remaining = () => (context?.getRemainingTimeInMillis?.() ?? Number.MAX_SAFE_INTEGER);
   const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY, apiVersion: "v1beta" });
 
-  const result = { scanned: 0, metaUpdated: 0, speakersUpdated: 0, dryRun, done: true };
+  const result = { scanned: 0, indexUpdated: 0, metaUpdated: 0, speakersUpdated: 0, dryRun, done: true };
   let startKey = event.startKey;
 
   do {
@@ -130,6 +169,10 @@ export async function runBackfill(event = {}, context) {
     const page = await scanPage(startKey);
     const rows = page.Items || [];
     result.scanned += rows.length;
+
+    // Cheapest pass first: if a later one runs out of time mid-page, the rows
+    // it already visited are at least in the feed.
+    result.indexUpdated += await backfillIndexKeys(rows.filter(needsIndexKey), { dryRun });
 
     result.metaUpdated += await backfillVideoMeta(rows.filter(needsVideoMeta), { dryRun });
 

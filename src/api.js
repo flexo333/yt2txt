@@ -20,11 +20,44 @@ const jsonHeaders = () => ({ 'Content-Type': 'application/json', ...authHeaders(
 // request at `undefined`.
 export const hasBackend = Boolean(LAMBDA_URL);
 
-// GET / → the 50 most recent summaries, newest first.
+// GET / → the 50 most recent summaries, newest first. Each row's `summary` is
+// a ~300-character snippet, flagged with `truncated: true` when it was cut —
+// enough for a list card, not enough to render or download a summary.
 export async function listSummaries() {
   const res = await fetch(LAMBDA_URL, { headers: authHeaders() });
   const { summaries } = await res.json();
   return summaries || [];
+}
+
+// GET /?video=<id> → one summary with its full markdown, whatever its age.
+// Resolves to null rather than throwing on 404 (never summarised) and on any
+// other failure, including a Lambda predating this endpoint — callers then keep
+// showing whatever the list gave them.
+export async function getSummary(id) {
+  try {
+    const res = await fetch(
+      `${LAMBDA_URL}?video=${encodeURIComponent(id)}`,
+      { headers: authHeaders() },
+    );
+    if (!res.ok) return null;
+    const {
+      url, markdown, title, date, model, videoTitle, channelTitle, speakers,
+    } = await res.json();
+    if (!markdown) return null;
+    return {
+      url,
+      title,
+      date,
+      summary: markdown,
+      model,
+      videoTitle: videoTitle || null,
+      channelTitle: channelTitle || null,
+      speakers: speakers || [],
+    };
+  } catch (err) {
+    console.error(err);
+    return null;
+  }
 }
 
 // POST / → summarise a video and persist it. The Lambda dedupes on url, so an

@@ -426,6 +426,11 @@ export async function runPersonJob(person, allowedModels = [], context) {
 
 // Scans for active jobs idle past the stall threshold and self-invokes a
 // continuation for each. Recovers jobs whose Lambda was killed mid-run.
+//
+// The Scan is deliberate, unlike the one listSummaries() replaced with a Query:
+// yt2txt-people holds one row per tracked person (tens, not thousands), there
+// is no Limit truncating the result, and the filter is on `status` rather than
+// on recency — an index would buy nothing at this size.
 export async function resumeStalledJobs() {
   const res = await ddb.send(new ScanCommand({
     TableName: PEOPLE_TABLE,
@@ -461,6 +466,10 @@ export async function getPerson(displayName) {
   };
 }
 
+// Also a deliberate Scan: one row per tracked person, so the Limit of 100 is a
+// guard rail rather than a window, and the whole table is the answer. If the
+// people list ever outgrows a page it needs the same treatment as the summaries
+// feed — a constant-key index sorted by lastRunAt — not a bigger Limit.
 export async function listPeople() {
   const res = await ddb.send(new ScanCommand({ TableName: PEOPLE_TABLE, Limit: 100 }));
   const items = (res.Items || []).map(({ person, displayName, status, lastRunAt, progress }) => ({
