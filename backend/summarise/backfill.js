@@ -42,16 +42,23 @@ async function scanPage(startKey) {
   return ddb.send(new ScanCommand({
     TableName: TABLE,
     Limit: 100,
-    ExclusiveStartKey: startKey,
+    // Omitted rather than passed as null — a resumed run that stopped on the
+    // first page has no key to hand back and must start from the beginning.
+    ...(startKey ? { ExclusiveStartKey: startKey } : {}),
   }));
 }
 
 // Fill channelTitle/videoTitle/channelId for a batch of rows in one API call.
+// Rows are grouped by video id, not replaced: the table is keyed by the raw
+// URL and the Lambda accepts both `watch?v=` and `youtu.be` forms, so the same
+// video can legitimately hold several rows that all need the same metadata.
 async function backfillVideoMeta(rows, { dryRun }) {
   const byId = new Map();
   for (const row of rows) {
     const videoId = extractVideoId(row.url);
-    if (videoId) byId.set(videoId, row);
+    if (!videoId) continue;
+    if (!byId.has(videoId)) byId.set(videoId, []);
+    byId.get(videoId).push(row);
   }
   if (byId.size === 0) return 0;
 
@@ -68,34 +75,36 @@ async function backfillVideoMeta(rows, { dryRun }) {
     }
     for (const videoId of chunk) {
       const info = meta[videoId];
-      const row = byId.get(videoId);
-      // A deleted or private video returns nothing — leave the row alone.
+      // A deleted or private video returns nothing — leave the rows alone.
       if (!info || (!info.channelTitle && !info.title)) continue;
-      updated++;
-      if (dryRun) continue;
-      await ddb.send(new UpdateCommand({
-        TableName: TABLE,
-        Key: { url: row.url },
-        UpdateExpression: "SET #vt = :vt, #ct = :ct, #ci = :ci",
-        ExpressionAttributeNames: { "#vt": "videoTitle", "#ct": "channelTitle", "#ci": "channelId" },
-        ExpressionAttributeValues: {
-          ":vt": info.title || null,
-          ":ct": info.channelTitle || null,
-          ":ci": info.channelId || null,
-        },
-      }));
+      for (const row of byId.get(videoId)) {
+        updated++;
+        if (dryRun) continue;
+        await ddb.send(new UpdateCommand({
+          TableName: TABLE,
+          Key: { url: row.url },
+          UpdateExpression: "SET #vt = :vt, #ct = :ct, #ci = :ci",
+          ExpressionAttributeNames: { "#vt": "videoTitle", "#ct": "channelTitle", "#ci": "channelId" },
+          ExpressionAttributeValues: {
+            ":vt": info.title || null,
+            ":ct": info.channelTitle || null,
+            ":ci": info.channelId || null,
+          },
+        }));
+      }
     }
   }
   return updated;
 }
 
-async function backfillSpeakers(ai, model, row, { dryRun }) {
-  if (!row.markdown) return null;
+// Returns true when the row was (or would be) written. A failed extraction
+// returns null from extractSpeakersFromMarkdown and writes nothing, so the row
+// keeps no `speakers` attribute and a later run picks it up again — otherwise a
+// rate-limit storm mid-migration would permanently mark rows as tagless.
+async function backfillSpeakers(ai, model, row) {
+  if (!row.markdown) return false;
   const speakers = await extractSpeakersFromMarkdown(ai, model, row.markdown);
-  // extractSpeakersFromMarkdown swallows its errors and returns [], which is
-  // also what "no one named" looks like. Both are worth persisting: the row
-  // then stops being rescanned, and a re-run can be forced by hand if needed.
-  if (dryRun) return speakers;
+  if (speakers === null) return false;
   await ddb.send(new UpdateCommand({
     TableName: TABLE,
     Key: { url: row.url },
@@ -103,7 +112,7 @@ async function backfillSpeakers(ai, model, row, { dryRun }) {
     ExpressionAttributeNames: { "#s": "speakers" },
     ExpressionAttributeValues: { ":s": speakers },
   }));
-  return speakers;
+  return true;
 }
 
 export async function runBackfill(event = {}, context) {
@@ -124,17 +133,25 @@ export async function runBackfill(event = {}, context) {
 
     result.metaUpdated += await backfillVideoMeta(rows.filter(needsVideoMeta), { dryRun });
 
-    for (const row of rows.filter(needsSpeakers)) {
-      if (remaining() < TIME_RESERVE_MS) {
-        // Resume from this page, not the next one — its remaining rows are
-        // still untouched. Rows already written this run are skipped on the
-        // rescan because they now have the attribute.
-        result.done = false;
-        result.nextStartKey = pageStartKey || null;
-        return result;
+    const speakerRows = rows.filter(needsSpeakers);
+    if (dryRun) {
+      // A dry run only counts. Calling Gemini per row would spend real tokens
+      // for a rehearsal, and since it writes nothing there is no attribute to
+      // make a resumed run skip rows it already visited — it would replay the
+      // same page forever.
+      result.speakersUpdated += speakerRows.filter((row) => row.markdown).length;
+    } else {
+      for (const row of speakerRows) {
+        if (remaining() < TIME_RESERVE_MS) {
+          // Resume from this page, not the next one — its remaining rows are
+          // still untouched. Rows already written this run are skipped on the
+          // rescan because they now have the attribute.
+          result.done = false;
+          result.nextStartKey = pageStartKey || null;
+          return result;
+        }
+        if (await backfillSpeakers(ai, model, row)) result.speakersUpdated++;
       }
-      const speakers = await backfillSpeakers(ai, model, row, { dryRun });
-      if (speakers) result.speakersUpdated++;
     }
 
     startKey = page.LastEvaluatedKey;

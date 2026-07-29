@@ -50,7 +50,7 @@ A summary row is `{ url, title, markdown, date, createdAt, model, videoTitle, ch
 Speaker-tag modules:
 - `backend/summarise/tags.js` — dependency-free pure helpers (trailer parsing/stripping, name normalisation); smoke-tested by `tags.test.mjs` under plain `node`.
 - `backend/summarise/speakers.js` — the text-only extraction fallback, used when a model ignores the trailer contract and by the backfill.
-- `backend/summarise/backfill.js` — one-shot enrichment of pre-existing rows. Invoke the Lambda directly with `{"__backfill": true}` (add `"dryRun": true` to rehearse). Idempotent: a row is done once it has the attribute, so re-running only retries what failed. If it returns `done: false`, re-invoke with the returned `nextStartKey` as `startKey`.
+- `backend/summarise/backfill.js` — one-shot enrichment of pre-existing rows. Invoke the Lambda directly with `{"__backfill": true}`; `"dryRun": true` counts what would change without writing or calling Gemini. Idempotent: a row is done once it has the attribute, so re-running only retries what failed — a failed extraction writes nothing precisely so it stays eligible. If it returns `done: false`, re-invoke with the returned `nextStartKey` as `startKey`.
 
 Person-research modules:
 - `backend/summarise/youtube.js` — YouTube Data API v3 search + metadata (needs `YOUTUBE_API_KEY`).

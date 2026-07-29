@@ -260,12 +260,14 @@ const BrightBlogApp = () => {
   };
 
   // Tags live inside a card that is itself a link, so a tag click has to stop
-  // the card navigation before applying the filter.
+  // the card navigation before applying the filter. The path is what decides
+  // whether to navigate, not `page` — a /summary/ route reports page
+  // 'history' but is not the list the filter applies to.
   const filterBySpeaker = (e, name) => {
     e.preventDefault();
     e.stopPropagation();
     setSpeakerFilter(name);
-    if (page !== 'history') navigate('/history');
+    if (normalized !== '/history') navigate('/history');
   };
 
   // Summaries written before speaker tags existed have no `speakers` — those

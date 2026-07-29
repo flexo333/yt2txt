@@ -31,8 +31,10 @@ function withTimeout(promise, ms) {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
-// Best-effort: any failure returns [] rather than throwing, so summarising and
-// backfilling never fail over missing tags.
+// Never throws. Returns a (possibly empty) name list when the call succeeded,
+// and null when the call itself failed — a timeout, a rate limit, a dead model.
+// The two are kept distinct because "the model named nobody" is a final answer
+// worth persisting, while a failure must stay eligible for a retry.
 export async function extractSpeakersFromMarkdown(ai, model, markdown, { timeoutMs = EXTRACT_TIMEOUT_MS } = {}) {
   const text = String(markdown || "").trim();
   if (!text) return [];
@@ -56,6 +58,6 @@ export async function extractSpeakersFromMarkdown(ai, model, markdown, { timeout
     return [];
   } catch (err) {
     console.warn("speaker extraction failed", err?.message || err);
-    return [];
+    return null;
   }
 }

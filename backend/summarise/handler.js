@@ -257,7 +257,9 @@ async function summarise(url, requestedModel = DEFAULT_MODEL) {
   const cleanMarkdown = stripSpeakerTrailer(markdown);
   let speakers = normaliseSpeakers(trailer || []);
   if (speakers.length === 0 && trailer === null) {
-    speakers = await extractSpeakersFromMarkdown(ai, usedModel, cleanMarkdown);
+    // null means the extraction call failed; on the request path that is the
+    // same as no tags — the summary still ships.
+    speakers = (await extractSpeakersFromMarkdown(ai, usedModel, cleanMarkdown)) || [];
   }
 
   const title = extractTitle(cleanMarkdown);
