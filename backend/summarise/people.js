@@ -3,7 +3,7 @@ import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, PutCommand, QueryCommand, ScanCommand, GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
 import { searchVideosByPerson, getVideoMetadata, extractVideoId } from "./youtube.js";
-import { DEFAULT_MODEL } from "./constants.js";
+import { DEFAULT_MODEL, MEDIA_RESOLUTION_LOW, fpsForDuration } from "./constants.js";
 import {
   MAX_VIDEOS,
   VIDEO_CALL_TIMEOUT_MS,
@@ -180,11 +180,11 @@ export async function researchPerson(displayName, model, { force = false } = {})
 
 // ── per-video summarisation ──────────────────────────────────────────────────
 
-function buildVideoContents(video, displayName) {
+function buildVideoContents(video, displayName, fps) {
   const videoId = video.videoId || extractVideoId(video.url);
   return [{
     parts: [
-      { fileData: { fileUri: video.url } },
+      { fileData: { fileUri: video.url }, videoMetadata: { fps } },
       { text: `Speaker to focus on: ${displayName}\nVideo URL: ${video.url}\nVideo ID: ${videoId}\n\n${VIDEO_PROMPT}` },
     ],
   }];
@@ -193,15 +193,22 @@ function buildVideoContents(video, displayName) {
 // Summarise one video, walking the model chain; each model retried with backoff
 // on a retryable error. Returns { markdown, model }. Throws when all exhausted.
 async function summariseVideo(ai, video, displayName, modelChain) {
-  const contents = buildVideoContents(video, displayName);
+  // durationSeconds is written by searchAndQueueVideos, so no extra API call.
+  const fps = fpsForDuration(video.durationSeconds);
+  const contents = buildVideoContents(video, displayName, fps);
   let lastErr;
   for (const model of modelChain) {
     for (let attempt = 0; attempt < MAX_RETRIES_PER_MODEL; attempt++) {
       try {
         const response = await withTimeout(
-          ai.models.generateContent({ model, contents }),
+          ai.models.generateContent({
+            model,
+            contents,
+            config: { mediaResolution: MEDIA_RESOLUTION_LOW },
+          }),
           VIDEO_CALL_TIMEOUT_MS,
         );
+        console.log(`summariseVideo tokens: ${video.videoId} model=${model} fps=${fps} total=${response.usageMetadata?.totalTokenCount ?? "?"}`);
         const markdown = response.text
           || response.candidates?.[0]?.content?.parts?.map((p) => p.text).filter(Boolean).join("\n")
           || "";
