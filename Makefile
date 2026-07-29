@@ -110,6 +110,11 @@ deploy: install ## Build (with live Lambda URL) + sync dist/ to S3 + invalidate 
 	echo "→ Building with VITE_LAMBDA_URL=$$LAMBDA_URL"; \
 	docker compose run --rm -e VITE_LAMBDA_URL=$$LAMBDA_URL -e VITE_YT2TXT_KEY=$$YT2TXT_KEY node npm run build; \
 	echo "→ Deploying to $$BUCKET"; \
-	docker compose run --rm awscli s3 sync /app/dist/ s3://$$BUCKET --delete; \
+	docker compose run --rm awscli s3 sync /app/dist/ s3://$$BUCKET --delete \
+		--cache-control 'public,max-age=31536000,immutable' \
+		--exclude '*' --include 'assets/*'; \
+	docker compose run --rm awscli s3 sync /app/dist/ s3://$$BUCKET --delete \
+		--cache-control 'no-cache' \
+		--exclude 'assets/*'; \
 	docker compose run --rm awscli cloudfront create-invalidation \
 		--distribution-id $$CFID --paths '/*'

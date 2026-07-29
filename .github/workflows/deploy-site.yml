@@ -61,7 +61,15 @@ jobs:
       - name: Sync to S3
         env:
           BUCKET: ${{ steps.config.outputs.BUCKET }}
-        run: aws s3 sync dist/ s3://$BUCKET --delete
+        run: |
+          # Content-hashed assets: immutable, cache for a year.
+          aws s3 sync dist/ s3://$BUCKET --delete \
+            --cache-control 'public,max-age=31536000,immutable' \
+            --exclude '*' --include 'assets/*'
+          # Everything else (index.html, sw.js, manifest.json, icons): must revalidate.
+          aws s3 sync dist/ s3://$BUCKET --delete \
+            --cache-control 'no-cache' \
+            --exclude 'assets/*'
 
       - name: Invalidate CloudFront
         env:
