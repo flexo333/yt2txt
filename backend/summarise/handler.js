@@ -3,6 +3,9 @@ import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, PutCommand, ScanCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
 import { researchPerson, runPersonJob, getPerson, listPeople, resumeStalledJobs } from "./people.js";
 import { extractVideoId, getVideoMetadata } from "./youtube.js";
+import { normaliseSpeakers, parseSpeakerTrailer, stripSpeakerTrailer } from "./tags.js";
+import { extractSpeakersFromMarkdown } from "./speakers.js";
+import { runBackfill } from "./backfill.js";
 import { DEFAULT_MODEL, DEFAULT_FPS, MEDIA_RESOLUTION_LOW, fpsForDuration } from "./constants.js";
 
 const SYSTEM_PROMPT = `Role: You are a no-nonsense Content Analyst. Your goal is to give me the "meat" of the video in plain English. Cut all fluff, repetitive points, and AI-sounding filler.
@@ -16,6 +19,9 @@ Instructions:
   Signal-to-Noise: (x/5)
   Clickbait Factor: (x/5)
 5. Key Insights: Use headers for main topics.
+6. Speakers: The very last line of your reply, after everything else, must name every person who actually speaks in the video — the host and any guests — in exactly this form:
+Speakers: Jane Doe, John Smith
+  Real names only. Skip anyone who is merely mentioned but never speaks, and skip generic labels like "host" or "narrator". If you cannot name anyone, write exactly "Speakers: none". This line is metadata, not part of the summary.
  Constraint: Skip the ads and random filler conversation.
  Output: Distill the insights and a timestamp link like this: [HH:MM:SS](https://youtu.be/VIDEO_ID?t=SECONDS).
  Use exactly the Video ID provided below in timestamp links. Do not infer it from the content.
@@ -152,28 +158,54 @@ function headerValue(event, name) {
   return undefined;
 }
 
-// Frame sample rate for a single video, from its YouTube duration. Best-effort:
-// the YouTube API is not required for summarising, so any failure (including a
-// missing YOUTUBE_API_KEY) falls back to DEFAULT_FPS rather than erroring.
-async function lookupFps(videoId) {
-  if (!videoId) return DEFAULT_FPS;
+const NO_VIDEO_META = { fps: DEFAULT_FPS, videoTitle: null, channelTitle: null, channelId: null };
+
+// Frame sample rate plus the video's own title and channel, from one YouTube
+// API call. Best-effort: the YouTube API is not required for summarising, so
+// any failure (including a missing YOUTUBE_API_KEY) falls back to DEFAULT_FPS
+// and no channel metadata rather than erroring.
+async function lookupVideoMeta(videoId) {
+  if (!videoId) return NO_VIDEO_META;
   try {
     const meta = await getVideoMetadata([videoId]);
-    return fpsForDuration(meta?.[videoId]?.durationSeconds);
+    const info = meta?.[videoId];
+    if (!info) return NO_VIDEO_META;
+    return {
+      fps: fpsForDuration(info.durationSeconds),
+      videoTitle: info.title || null,
+      channelTitle: info.channelTitle || null,
+      channelId: info.channelId || null,
+    };
   } catch (err) {
-    console.warn(`duration lookup failed for ${videoId}, using default fps`, err?.message || err);
-    return DEFAULT_FPS;
+    console.warn(`metadata lookup failed for ${videoId}, using defaults`, err?.message || err);
+    return NO_VIDEO_META;
   }
+}
+
+// Shape of a summary in every response body. Rows written before speaker tags
+// existed have no speakers/channelTitle/videoTitle — they come back as [] and
+// null so the frontend can render old and new rows the same way.
+function summaryPayload(item, url, extra = {}) {
+  return {
+    url,
+    markdown: item.markdown,
+    title: item.title,
+    date: item.date,
+    model: item.model,
+    videoTitle: item.videoTitle || null,
+    channelTitle: item.channelTitle || null,
+    speakers: item.speakers || [],
+    ...extra,
+  };
 }
 
 async function summarise(url, requestedModel = DEFAULT_MODEL) {
   const existing = await ddb.send(new GetCommand({ TableName: TABLE, Key: { url } }));
   if (existing.Item) {
-    const { markdown, title, date, model } = existing.Item;
     return {
       statusCode: 200,
       headers: JSON_HEADERS,
-      body: JSON.stringify({ markdown, title, url, date, model, cached: true }),
+      body: JSON.stringify(summaryPayload(existing.Item, url, { cached: true })),
     };
   }
 
@@ -181,7 +213,7 @@ async function summarise(url, requestedModel = DEFAULT_MODEL) {
   const videoId = extractVideoId(url);
   const promptText = `${SYSTEM_PROMPT}\n\nVideo URL: ${url}\nVideo ID: ${videoId}`;
   const chain = buildModelChain(requestedModel, await getAllowedModels());
-  const fps = await lookupFps(videoId);
+  const { fps, videoTitle, channelTitle, channelId } = await lookupVideoMeta(videoId);
 
   let markdown;
   let usedModel;
@@ -218,14 +250,36 @@ async function summarise(url, requestedModel = DEFAULT_MODEL) {
     };
   }
 
-  const title = extractTitle(markdown);
+  // The speaker trailer is metadata, so it is stripped before the summary is
+  // stored. If the model skipped it, re-read the finished summary with a cheap
+  // text-only call; tags are optional, so an empty list is a fine outcome.
+  const trailer = parseSpeakerTrailer(markdown);
+  const cleanMarkdown = stripSpeakerTrailer(markdown);
+  let speakers = normaliseSpeakers(trailer || []);
+  if (speakers.length === 0 && trailer === null) {
+    speakers = await extractSpeakersFromMarkdown(ai, usedModel, cleanMarkdown);
+  }
+
+  const title = extractTitle(cleanMarkdown);
   const date = new Date().toISOString().split("T")[0];
   const createdAt = Date.now();
+  const item = {
+    url,
+    title,
+    markdown: cleanMarkdown,
+    date,
+    createdAt,
+    model: usedModel,
+    videoTitle,
+    channelTitle,
+    channelId,
+    speakers,
+  };
 
   try {
     await ddb.send(new PutCommand({
       TableName: TABLE,
-      Item: { url, title, markdown, date, createdAt, model: usedModel },
+      Item: item,
       ConditionExpression: "attribute_not_exists(#u)",
       ExpressionAttributeNames: { "#u": "url" },
     }));
@@ -236,14 +290,7 @@ async function summarise(url, requestedModel = DEFAULT_MODEL) {
       return {
         statusCode: 200,
         headers: JSON_HEADERS,
-        body: JSON.stringify({
-          markdown: again.Item.markdown,
-          title: again.Item.title,
-          url,
-          date: again.Item.date,
-          model: again.Item.model,
-          cached: true,
-        }),
+        body: JSON.stringify(summaryPayload(again.Item, url, { cached: true })),
       };
     }
   }
@@ -251,7 +298,7 @@ async function summarise(url, requestedModel = DEFAULT_MODEL) {
   return {
     statusCode: 200,
     headers: JSON_HEADERS,
-    body: JSON.stringify({ markdown, title, url, date, model: usedModel }),
+    body: JSON.stringify(summaryPayload(item, url)),
   };
 }
 
@@ -269,8 +316,11 @@ async function listSummaries() {
   const summaries = (result.Items || [])
     .sort((a, b) => b.createdAt - a.createdAt)
     .slice(0, 50)
-    .map(({ url, title, date, createdAt, markdown, model }) => ({
+    .map(({ url, title, date, createdAt, markdown, model, videoTitle, channelTitle, speakers }) => ({
       url, title, date, createdAt, model,
+      videoTitle: videoTitle || null,
+      channelTitle: channelTitle || null,
+      speakers: speakers || [],
       summary: (markdown || '').slice(0, 8000),
     }));
 
@@ -286,6 +336,12 @@ export async function handler(event, context) {
     const allowed = await getAllowedModels();
     await runPersonJob(event.person, allowed.map((m) => m.value), context);
     return { statusCode: 200, body: "ok" };
+  }
+
+  if (event && event.__backfill) {
+    const result = await runBackfill(event, context);
+    console.log("runBackfill", JSON.stringify(result));
+    return { statusCode: 200, body: JSON.stringify(result) };
   }
 
   if (event && event.__resumeJobs) {

@@ -493,6 +493,74 @@ a:hover { color: var(--link-hover); }
   margin-top: 0.5rem;
 }
 
+/* ── Channel name, real video title, speaker tags ────────────────────────── */
+.channel-name {
+  display: inline-block;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.history-card .channel-name {
+  margin-top: 0.25rem;
+}
+
+.summary-meta .channel-name {
+  margin-right: 0.5rem;
+}
+
+/* The YouTube-supplied title, shown under the summary's own plain-English one. */
+.video-title {
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-style: italic;
+  margin: 0.15rem 0 0.4rem;
+}
+
+.speaker-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin: 0.5rem 0;
+}
+
+.speaker-tag {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 99px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 0.12rem 0.6rem;
+  cursor: pointer;
+}
+
+.speaker-tag:hover,
+.speaker-tag:focus-visible {
+  background: var(--sage-pale);
+  border-color: var(--sage-light);
+  color: var(--sage);
+}
+
+.speaker-tag--active {
+  background: var(--sage);
+  border-color: var(--sage);
+  color: var(--bg);
+}
+
+.filter-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 1rem;
+  padding: 0.6rem 0.9rem;
+  background: var(--sage-pale);
+  border-radius: 8px;
+  font-size: 0.9rem;
+}
+
 /* ── Share target landing (/share) ───────────────────────────────────────── */
 .share-panel {
   text-align: center;

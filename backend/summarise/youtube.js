@@ -49,9 +49,11 @@ export async function getVideoMetadata(videoIds) {
   const key = process.env.YOUTUBE_API_KEY;
   if (!key) throw new Error("YOUTUBE_API_KEY is not set");
 
+  // snippet is on the same 1-unit quota cost as the rest, and carries the
+  // authoritative video title and channel name.
   const params = new URLSearchParams({
     key,
-    part: "contentDetails,statistics",
+    part: "snippet,contentDetails,statistics",
     id: videoIds.join(","),
   });
 
@@ -64,6 +66,10 @@ export async function getVideoMetadata(videoIds) {
     out[item.id] = {
       durationSeconds: parseISODuration(item.contentDetails?.duration),
       viewCount: Number(item.statistics?.viewCount || 0),
+      title: item.snippet?.title || "",
+      channelTitle: item.snippet?.channelTitle || "",
+      channelId: item.snippet?.channelId || "",
+      publishedAt: item.snippet?.publishedAt || "",
     };
   }
   return out;

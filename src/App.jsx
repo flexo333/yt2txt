@@ -88,6 +88,8 @@ const BrightBlogApp = () => {
   const [modelOptions, setModelOptions] = useState(FALLBACK_MODEL_OPTIONS);
   // Share-target flow: { status: 'working' | 'invalid' | 'error', url, message }
   const [share, setShare] = useState(null);
+  // Speaker tag currently filtering the History page, or null for everything.
+  const [speakerFilter, setSpeakerFilter] = useState(null);
   const shareStarted = useRef(false);
   const bookmarkletRef = useRef(null);
 
@@ -146,8 +148,17 @@ const BrightBlogApp = () => {
       body: JSON.stringify({ url: targetUrl, model: targetModel }),
     });
     if (!res.ok) throw new Error(await res.text());
-    const { markdown, title, date, model: usedModel } = await res.json();
-    const item = { url: targetUrl, title, date, summary: markdown, model: usedModel };
+    const { markdown, title, date, model: usedModel, videoTitle, channelTitle, speakers } = await res.json();
+    const item = {
+      url: targetUrl,
+      title,
+      date,
+      summary: markdown,
+      model: usedModel,
+      videoTitle: videoTitle || null,
+      channelTitle: channelTitle || null,
+      speakers: speakers || [],
+    };
     // The Lambda dedupes on url, so an already-summarised video comes back
     // cached — replace the existing row rather than adding a duplicate.
     setHistory(prev => [item, ...prev.filter(h => h.url !== targetUrl)]);
@@ -248,6 +259,43 @@ const BrightBlogApp = () => {
     return found ? found.label : value.replace(/^models\//, '');
   };
 
+  // Tags live inside a card that is itself a link, so a tag click has to stop
+  // the card navigation before applying the filter.
+  const filterBySpeaker = (e, name) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setSpeakerFilter(name);
+    if (page !== 'history') navigate('/history');
+  };
+
+  // Summaries written before speaker tags existed have no `speakers` — those
+  // cards simply render without a tag row.
+  const SpeakerTags = ({ item }) => {
+    const speakers = item.speakers || [];
+    if (speakers.length === 0) return null;
+    return (
+      <div className="speaker-tags">
+        {speakers.map((name) => (
+          <span
+            key={name}
+            role="button"
+            tabIndex={0}
+            className={`speaker-tag ${speakerFilter === name ? 'speaker-tag--active' : ''}`}
+            title={`Show only summaries featuring ${name}`}
+            onClick={(e) => filterBySpeaker(e, name)}
+            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') filterBySpeaker(e, name); }}
+          >
+            {name}
+          </span>
+        ))}
+      </div>
+    );
+  };
+
+  const visibleHistory = speakerFilter
+    ? history.filter((h) => (h.speakers || []).includes(speakerFilter))
+    : history;
+
   const Header = () => (
     <header className="site-header">
       <div className="site-brand">
@@ -299,11 +347,18 @@ const BrightBlogApp = () => {
                   Download .md
                 </button>
               </div>
-              {detailItem.model && (
+              {(detailItem.channelTitle || detailItem.model) && (
                 <div className="summary-meta">
-                  <span className="model-tag">{modelLabel(detailItem.model)}</span>
+                  {detailItem.channelTitle && (
+                    <span className="channel-name">{detailItem.channelTitle}</span>
+                  )}
+                  {detailItem.model && <span className="model-tag">{modelLabel(detailItem.model)}</span>}
                 </div>
               )}
+              {detailItem.videoTitle && (
+                <p className="video-title">{detailItem.videoTitle}</p>
+              )}
+              <SpeakerTags item={detailItem} />
               <article className="prose">
                 <ReactMarkdown urlTransform={MARKDOWN_URL_TRANSFORM} components={MARKDOWN_COMPONENTS}>{detailItem.summary}</ReactMarkdown>
               </article>
@@ -384,11 +439,23 @@ const BrightBlogApp = () => {
       <div className="page-shell">
         <div className="container">
           <Header />
-          {history.length === 0 ? (
-            <div className="empty-state">No summaries yet. Generate one from the Home page.</div>
+          {speakerFilter && (
+            <div className="filter-bar">
+              <span>Featuring <strong>{speakerFilter}</strong></span>
+              <button className="btn btn--secondary" onClick={() => setSpeakerFilter(null)}>
+                Clear filter
+              </button>
+            </div>
+          )}
+          {visibleHistory.length === 0 ? (
+            <div className="empty-state">
+              {speakerFilter
+                ? `No summaries featuring ${speakerFilter}.`
+                : 'No summaries yet. Generate one from the Home page.'}
+            </div>
           ) : (
             <div className="history-list">
-              {history.map((item, i) => {
+              {visibleHistory.map((item, i) => {
                 const href = summaryPath(item);
                 return (
                   <a
@@ -399,14 +466,17 @@ const BrightBlogApp = () => {
                   >
                     <div className="history-list-meta">
                       <span className="history-date">{item.date}</span>
+                      {item.channelTitle && <span className="channel-name">{item.channelTitle}</span>}
                       {item.model && <span className="model-tag">{modelLabel(item.model)}</span>}
                     </div>
                     <h3 className="history-list-title">{item.title || item.url}</h3>
+                    {item.videoTitle && <p className="video-title">{item.videoTitle}</p>}
                     {item.summary && (
                       <p className="history-list-snippet">
                         {item.summary.replace(/^#+\s.+\n?/gm, '').replace(/[*_`#]/g, '').trim().slice(0, 200)}…
                       </p>
                     )}
+                    <SpeakerTags item={item} />
                     <span className="history-list-url">{item.url}</span>
                   </a>
                 );
@@ -491,7 +561,9 @@ const BrightBlogApp = () => {
                   >
                     <div className="history-date">{item.date}</div>
                     <span className="history-title">{item.title || item.url}</span>
+                    {item.channelTitle && <span className="channel-name">{item.channelTitle}</span>}
                     <span className="history-url">{item.url}</span>
+                    <SpeakerTags item={item} />
                     {item.model && <span className="model-tag">{modelLabel(item.model)}</span>}
                   </a>
                 );
