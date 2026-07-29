@@ -639,6 +639,13 @@ a:hover { color: var(--link-hover); }
   to { transform: rotate(360deg); }
 }
 
+/* ── Inline errors ───────────────────────────────────────────────────────── */
+.error {
+  color: var(--rose);
+  font-size: 0.9rem;
+  margin-top: 0.75rem;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .share-spinner { animation-duration: 3s; }
 }

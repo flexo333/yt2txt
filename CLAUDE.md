@@ -26,7 +26,7 @@ There is no `make lint` — don't invent one.
 
 Three layers, each with one source of truth:
 
-**Frontend (`src/`, `index.html`)** — single `App.jsx` component (no router, just `page` state). On mount it `GET`s `VITE_LAMBDA_URL` to hydrate history and `GET`s `?models=1` to populate the model dropdown; "Generate" `POST`s `{ url, model }`. The dropdown is populated dynamically — `FALLBACK_MODEL_OPTIONS` in `App.jsx` is only rendered if that fetch fails.
+**Frontend (`src/`, `index.html`)** — `App.jsx` is the router (no router library — `src/useLocation.js` over the History API) and owner of cross-route state; routes render from `src/pages/*.jsx` with shared pieces in `src/components/`. Every fetch lives in `src/api.js` — add new backend calls there, not in components. On mount App `GET`s `VITE_LAMBDA_URL` to hydrate history and `GET`s `?models=1` to populate the model dropdown; "Generate" `POST`s `{ url, model }`. The dropdown is populated dynamically — `FALLBACK_MODEL_OPTIONS` in `App.jsx` is only rendered if that fetch fails.
 
 **PWA (`public/manifest.json`, `public/sw.js`, `src/share.js`)** — installable app + Android share target:
 - `manifest.json` declares `display: standalone`, the icon set, shortcuts, and a **`share_target`** posting to `/share` via **GET** (no server round-trip needed — the SPA reads the query string). `launch_handler.client_mode: navigate-existing` reuses an already-open window.
