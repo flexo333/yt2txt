@@ -2,8 +2,8 @@ import { GoogleGenAI } from "@google/genai";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, PutCommand, ScanCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
 import { researchPerson, runPersonJob, getPerson, listPeople, resumeStalledJobs } from "./people.js";
-import { extractVideoId } from "./youtube.js";
-import { DEFAULT_MODEL } from "./constants.js";
+import { extractVideoId, getVideoMetadata } from "./youtube.js";
+import { DEFAULT_MODEL, DEFAULT_FPS, MEDIA_RESOLUTION_LOW, fpsForDuration } from "./constants.js";
 
 const SYSTEM_PROMPT = `Role: You are a no-nonsense Content Analyst. Your goal is to give me the "meat" of the video in plain English. Cut all fluff, repetitive points, and AI-sounding filler.
 
@@ -152,6 +152,20 @@ function headerValue(event, name) {
   return undefined;
 }
 
+// Frame sample rate for a single video, from its YouTube duration. Best-effort:
+// the YouTube API is not required for summarising, so any failure (including a
+// missing YOUTUBE_API_KEY) falls back to DEFAULT_FPS rather than erroring.
+async function lookupFps(videoId) {
+  if (!videoId) return DEFAULT_FPS;
+  try {
+    const meta = await getVideoMetadata([videoId]);
+    return fpsForDuration(meta?.[videoId]?.durationSeconds);
+  } catch (err) {
+    console.warn(`duration lookup failed for ${videoId}, using default fps`, err?.message || err);
+    return DEFAULT_FPS;
+  }
+}
+
 async function summarise(url, requestedModel = DEFAULT_MODEL) {
   const existing = await ddb.send(new GetCommand({ TableName: TABLE, Key: { url } }));
   if (existing.Item) {
@@ -167,6 +181,7 @@ async function summarise(url, requestedModel = DEFAULT_MODEL) {
   const videoId = extractVideoId(url);
   const promptText = `${SYSTEM_PROMPT}\n\nVideo URL: ${url}\nVideo ID: ${videoId}`;
   const chain = buildModelChain(requestedModel, await getAllowedModels());
+  const fps = await lookupFps(videoId);
 
   let markdown;
   let usedModel;
@@ -177,11 +192,13 @@ async function summarise(url, requestedModel = DEFAULT_MODEL) {
         model: candidate,
         contents: [{
           parts: [
-            { fileData: { fileUri: url } },
+            { fileData: { fileUri: url }, videoMetadata: { fps } },
             { text: promptText },
           ],
         }],
+        config: { mediaResolution: MEDIA_RESOLUTION_LOW },
       });
+      console.log(`summarise tokens: model=${candidate} fps=${fps} total=${response.usageMetadata?.totalTokenCount ?? "?"}`);
       markdown = response.text;
       usedModel = candidate;
       break;
