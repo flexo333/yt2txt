@@ -7,6 +7,13 @@ in under ten lines. If a choice is obvious from reading the code, it does not be
 The five entries below were reconstructed on 2026-07-30 from the code and from CLAUDE.md,
 and dated to the commit that shipped each choice rather than to the day it was argued.
 
+## 2026-07-30 — Fork `pulumi-static-site` to unblock pulumi-aws 7.x
+
+**Context:** An `AuthType: NONE` Function URL needs a second policy statement, `lambda:InvokeFunction` conditioned on `lambda:InvokedViaFunctionUrl`. Expressing it needs `invoked_via_function_url` on `aws.lambda_.Permission`, which landed in pulumi-aws **7.16.0** — absent from 6.x (which ended at 6.83.4) and from 7.0–7.15. `pulumi-static-site` v0.1.0 pins `pulumi-aws<7.0.0`, so pip could not resolve the bump.
+**Options:** Add the statement out-of-band via `pulumi_command.local.Command` wrapping `aws lambda add-permission`; grant `lambda:InvokeFunction` with `principal="*"` and no condition, which works on 6.x; fork `pulumi-static-site` and widen its pin.
+**Choice:** Fork it — [`flexo333/pulumi-static-site@v0.2.0`](https://github.com/flexo333/pulumi-static-site) widens the pin to `pulumi-aws>=6.0.0,<8.0.0` and changes nothing else — then move this repo to `pulumi-aws>=7.16.0,<8.0.0`. The unconditioned grant was rejected outright: it would give the whole internet direct Invoke-API access, bypassing the Function URL, which is a materially wider grant than the one being fixed.
+**Consequences:** The static-site component is now ours to keep current against upstream. The provider moves a major version across the whole stack — the v7 diffs are cosmetic (`+region`, `+tagsAll`) and the 7.0 migration guide lists no breaking changes for IAM, Route53, ACM, CloudFront or Lambda, but they touch every resource, so the apply wants a real preview rather than a rubber stamp. Note `>=7.0` is *not* a sufficient floor, and pulumi/pulumi-aws#5930 is still open despite the feature having shipped — trust the wheel, not the tracker.
+
 ## 2026-07-30 — Two Lambdas over one code bundle
 
 **Context:** A single function served both the public Function URL and three internally-invoked job types, so the public endpoint carried the worker's 900 s timeout and its write-everything IAM role.

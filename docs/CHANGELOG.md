@@ -9,6 +9,8 @@ history on 2026-07-30, when this file was created.
 
 ## Unreleased
 
+- The summarise endpoint's public-access policy now carries both permissions AWS has required since October 2025. Nothing changes in normal use; it removes a trap where recreating the endpoint would have made every request fail with a 403 for no visible reason.
+
 ## Shipped
 
 ### 2026-07-30
