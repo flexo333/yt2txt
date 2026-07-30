@@ -103,3 +103,10 @@ Exported outputs (`bucket`, `distribution_id`, `api_url`, `lambda_function_name`
 
 - `.github/workflows/deploy-site.yml` — on `main` push touching frontend/backend/infra paths: rebuilds with live `VITE_LAMBDA_URL` pulled from `pulumi stack output api_url`, syncs S3, invalidates CloudFront. Uses OIDC to assume the `deploy_role_arn` from the ingress stack.
 - `.github/workflows/deploy-infra.yml` — previews on PR, applies on `main` push. Assumes `infra_role_arn` from the ingress stack. Needs `GEMINI_API_KEY` as a repo secret so the applied Lambda has it.
+
+## Repo bookkeeping
+
+- When work is completed, move its line from `docs/BACKLOG.md` `## Next` to `docs/CHANGELOG.md` `## Unreleased`, rewritten as a user-facing change.
+- When a non-obvious technical choice is made (dependency, schema, pattern, or a rejected alternative), append an entry to `docs/DECISIONS.md`: date, context, options, choice, consequences — under 10 lines.
+- When a new idea or defect surfaces mid-task, append one line to `docs/BACKLOG.md` `## Later` and continue the current task; do not act on it.
+- When an idea is abandoned, move its line to `docs/BACKLOG.md` `## Won't do` with a half-line reason rather than deleting it.
