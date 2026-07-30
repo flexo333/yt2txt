@@ -21,6 +21,7 @@ One line per item, each pointing at the code it came from.
 - The 4,096-byte body check runs on the raw string and never consults `isBase64Encoded` — harmless with a JSON content-type today, latent otherwise (`backend/summarise/handler.js:326`)
 - `filterModels` sorts reverse-alphabetically by model id, which puts newer models first by coincidence of naming rather than by design — give it an explicit rank, or a comment admitting the accident (`backend/summarise/models.js:44`)
 - `SHARED_SECRET` is checked server-side but shipped to the browser as `VITE_YT2TXT_KEY` and baked into the bundle, so it deters drive-by traffic and nothing more — describe it honestly, or put the Function URL behind CloudFront as an origin (which also deletes the hardcoded CORS origin list)
+- pulumi-aws 7.x deprecates what the stack still uses: `hash_key`/`range_key` → `key_schema` on the `summaries` table and its GSI (`infra/pulumi/__main__.py`), and `s3.BucketV2` → `s3.Bucket` inside the `pulumi-static-site` fork. Warnings only today, so they will bite whenever 8.x lands — the table half is ours, the bucket half belongs in `flexo333/pulumi-static-site`
 
 ## Won't do
 
