@@ -1,6 +1,6 @@
 import { GoogleGenAI } from "@google/genai";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, PutCommand, QueryCommand, ScanCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, PutCommand, QueryCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
 import { researchPerson, getPerson, listPeople } from "./people.js";
 import { getVideoMetadata } from "./youtube.js";
 import { canonicalUrlForId, canonicalYoutubeUrl, isVideoId, videoIdFrom } from "./youtube-url.js";
@@ -247,8 +247,8 @@ function listRow({ url, title, date, createdAt, markdown, model, videoTitle, cha
   };
 }
 
-// The real answer: the index is ordered by createdAt, so "newest 50" is exact
-// and costs one Query of 50 items however large the table gets.
+// The index is ordered by createdAt, so "newest 50" is exact and costs one
+// Query of 50 items however large the table gets.
 async function queryRecent() {
   const result = await ddb.send(new QueryCommand({
     TableName: TABLE,
@@ -262,48 +262,8 @@ async function queryRecent() {
   return result.Items || [];
 }
 
-// The pre-index behaviour, kept only as a fallback: Limit caps items evaluated,
-// not matched, and Scan has no ordering guarantee, so past 100 rows this is an
-// arbitrary subset sorted among itself.
-async function scanRecent() {
-  const result = await ddb.send(new ScanCommand({ TableName: TABLE, Limit: 100 }));
-  return (result.Items || [])
-    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
-    .slice(0, LIST_LIMIT);
-}
-
-// ── dual read, deletable ─────────────────────────────────────────────────────
-// The Query is correct but only sees rows carrying `gsi1pk`, and the index does
-// not exist at all until the Pulumi change is applied. Both gaps are transient,
-// so the Scan covers them: it runs when the Query fails outright, and tops up a
-// short page while the index is still sparse (a full page needs no help — those
-// 50 rows are the newest by definition).
-//
-// DELETE everything below the Query once the backfill is confirmed complete:
-//   aws dynamodb describe-table --table-name yt2txt-summaries \
-//     --query '{table: Table.ItemCount, index: Table.GlobalSecondaryIndexes[0].ItemCount}'
-// When the two counts match, scanRecent() and this merge are dead weight.
-async function recentSummaries() {
-  let queried = null;
-  try {
-    queried = await queryRecent();
-  } catch (err) {
-    console.warn(`${SUMMARY_INDEX} query failed, falling back to scan:`, err?.name || err);
-  }
-  if (queried && queried.length >= LIST_LIMIT) return queried;
-
-  const scanned = await scanRecent();
-  if (!queried || queried.length === 0) return scanned;
-
-  const byUrl = new Map(scanned.map((row) => [row.url, row]));
-  for (const row of queried) byUrl.set(row.url, row);
-  return [...byUrl.values()]
-    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
-    .slice(0, LIST_LIMIT);
-}
-
 async function listSummaries() {
-  const rows = await recentSummaries();
+  const rows = await queryRecent();
   return {
     statusCode: 200,
     headers: JSON_HEADERS,
@@ -311,34 +271,12 @@ async function listSummaries() {
   };
 }
 
-// The POST handler canonicalises before it writes, so every row written since
-// is keyed by exactly this URL and the GetItem is the answer.
+// The POST handler canonicalises before it writes, and the July 2026 backfill
+// moved every pre-canonicalisation row onto its canonical key, so the GetItem
+// is the whole answer.
 async function findByVideoId(id) {
   const direct = await ddb.send(new GetCommand({ TableName: TABLE, Key: { url: canonicalUrlForId(id) } }));
-  if (direct.Item) return direct.Item;
-
-  // ── legacy fallback, deletable ─────────────────────────────────────────────
-  // Rows written before the canonicalisation change can still sit under
-  // `youtu.be/<id>` or a tracking-parameter suffix. `contains` narrows
-  // server-side; the authoritative match is videoIdFrom, which is what built
-  // the link. DELETE this Scan once the backfill's canonical-URL pass reports
-  // `nonCanonicalRemaining: 0` on a completed (`done: true`) run — at that
-  // point no row exists that the GetItem above cannot find.
-  let startKey;
-  do {
-    const page = await ddb.send(new ScanCommand({
-      TableName: TABLE,
-      FilterExpression: "contains(#u, :id)",
-      ExpressionAttributeNames: { "#u": "url" },
-      ExpressionAttributeValues: { ":id": id },
-      ...(startKey ? { ExclusiveStartKey: startKey } : {}),
-    }));
-    const match = (page.Items || []).find((row) => videoIdFrom(row.url) === id);
-    if (match) return match;
-    startKey = page.LastEvaluatedKey;
-  } while (startKey);
-
-  return null;
+  return direct.Item || null;
 }
 
 // GET ?video=<id> → one full summary. This is what makes /summary/<videoId>

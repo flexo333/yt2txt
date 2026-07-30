@@ -279,8 +279,8 @@ export async function runBackfill(event = {}, context) {
 
   // urlDeleted should equal urlMigrated + urlMerged on a clean run; a gap means
   // rows were folded but not removed. nonCanonicalRemaining is the number this
-  // run left behind — zero on a `done: true` run means the ?video= Scan
-  // fallback in handler.js has nothing left to find and can be deleted.
+  // run left behind — handler.js relies on it having reached zero: since the
+  // July 2026 backfill, findByVideoId() is a bare GetItem on the canonical key.
   const result = {
     scanned: 0,
     urlMigrated: 0, urlMerged: 0, urlDeleted: 0, nonCanonicalRemaining: 0,
