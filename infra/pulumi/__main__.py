@@ -291,6 +291,10 @@ aws.iam.RolePolicy(
 # `resumeStalledJobs` can restart any job whose Lambda was killed mid-run.
 poll_rule = aws.cloudwatch.EventRule(
     "summarise-poll-rule",
+    # The CI infra role (ingress stack) scopes events:* to rule names matching
+    # yt2txt-* / flexo333-*, so the physical name must match one of those or CI
+    # cannot manage this rule.
+    name="yt2txt-summarise-poll-rule",
     schedule_expression="rate(3 minutes)",
     description="Resume stalled yt2txt person-research jobs",
 )
