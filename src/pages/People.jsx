@@ -1,43 +1,29 @@
-import React, { useState, useEffect, useRef } from 'react';
-import ReactMarkdown from 'react-markdown';
+import { useState, useEffect, useRef } from 'react';
+import { listPeople, getPerson, researchPerson } from '../api.js';
+import Markdown from '../components/Markdown.jsx';
 
-const LAMBDA_URL = import.meta.env.VITE_LAMBDA_URL;
-const YT2TXT_KEY = import.meta.env.VITE_YT2TXT_KEY || '';
-const authHeaders = () => (YT2TXT_KEY ? { 'x-yt2txt-key': YT2TXT_KEY } : {});
-
-const urlTransform = (url) => {
-  try {
-    const u = new URL(url, window.location.href);
-    return ['http:', 'https:', 'mailto:'].includes(u.protocol) ? url : '';
-  } catch { return ''; }
-};
-
-const mdComponents = {
-  a: ({ node, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer nofollow ugc" />,
-};
-
+// Person research: kick off a job, then poll it to completion. The job runs
+// server-side across several Lambda invocations, so the only way to follow it
+// is to re-read its status every few seconds until it reaches a terminal one.
 const People = () => {
   const [people, setPeople] = useState([]);
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
   const [selected, setSelected] = useState(null);
   const [detail, setDetail] = useState(null);
+  // Inline failure message for the Research / Retry buttons.
+  const [error, setError] = useState(null);
   const pollRef = useRef(null);
 
   const loadPeople = async () => {
     try {
-      const res = await fetch(`${LAMBDA_URL}?people=1`, { headers: authHeaders() });
-      const { people } = await res.json();
-      setPeople(people || []);
+      setPeople(await listPeople());
     } catch (e) { console.error(e); }
   };
 
   const loadDetail = async (person) => {
     try {
-      const res = await fetch(`${LAMBDA_URL}?person=${encodeURIComponent(person)}`, { headers: authHeaders() });
-      if (!res.ok) { setDetail(null); return; }
-      const data = await res.json();
-      setDetail(data);
+      setDetail(await getPerson(person));
     } catch (e) { console.error(e); }
   };
 
@@ -65,19 +51,14 @@ const People = () => {
   const startResearch = async () => {
     if (!name.trim()) return;
     setBusy(true);
+    setError(null);
     try {
-      const res = await fetch(LAMBDA_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({ action: 'research', person: name.trim() }),
-      });
-      if (!res.ok) throw new Error(await res.text());
-      const { person } = await res.json();
+      const { person } = await researchPerson(name.trim());
       setSelected(person);
       setName('');
       loadPeople();
     } catch (e) {
-      alert('Failed to start research: ' + e.message);
+      setError('Failed to start research: ' + e.message);
     } finally {
       setBusy(false);
     }
@@ -86,17 +67,13 @@ const People = () => {
   const retryResearch = async (personName) => {
     if (!personName) return;
     setBusy(true);
+    setError(null);
     try {
-      const res = await fetch(LAMBDA_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({ action: 'research', person: personName, force: true }),
-      });
-      if (!res.ok) throw new Error(await res.text());
+      await researchPerson(personName, { force: true });
       await loadDetail(selected);
       loadPeople();
     } catch (e) {
-      alert('Failed to retry: ' + e.message);
+      setError('Failed to retry: ' + e.message);
     } finally {
       setBusy(false);
     }
@@ -108,7 +85,10 @@ const People = () => {
     return (
       <div>
         <div className="article-actions">
-          <button className="btn btn--secondary" onClick={() => { setSelected(null); setDetail(null); }}>
+          <button
+            className="btn btn--secondary"
+            onClick={() => { setSelected(null); setDetail(null); setError(null); }}
+          >
             ← Back to People
           </button>
           <button
@@ -128,11 +108,12 @@ const People = () => {
             </>
           )}
         </p>
+        {error && <p className="error">{error}</p>}
         {errorMessage && <p className="error">{errorMessage}</p>}
 
         {meta?.markdown && (
           <article className="prose">
-            <ReactMarkdown urlTransform={urlTransform} components={mdComponents}>{meta.markdown}</ReactMarkdown>
+            <Markdown>{meta.markdown}</Markdown>
             {meta.bestVideoReason && <p><em>Best-video reason: {meta.bestVideoReason}</em></p>}
           </article>
         )}
@@ -148,7 +129,7 @@ const People = () => {
               {v.markdown && (
                 <details>
                   <summary>Summary</summary>
-                  <ReactMarkdown urlTransform={urlTransform} components={mdComponents}>{v.markdown}</ReactMarkdown>
+                  <Markdown>{v.markdown}</Markdown>
                 </details>
               )}
             </div>
@@ -174,6 +155,8 @@ const People = () => {
         </button>
       </div>
 
+      {error && <p className="error">{error}</p>}
+
       {people.length === 0 ? (
         <div className="empty-state">No people tracked yet. Add one above.</div>
       ) : (
@@ -182,7 +165,7 @@ const People = () => {
             <button
               key={p.person}
               className="history-list-card"
-              onClick={() => setSelected(p.person)}
+              onClick={() => { setError(null); setSelected(p.person); }}
             >
               <div className="history-list-meta">
                 <span className="history-date">{p.lastRunAt ? new Date(p.lastRunAt).toISOString().slice(0, 10) : '—'}</span>

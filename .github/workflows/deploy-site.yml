@@ -9,7 +9,6 @@ on:
       - "public/**"
       - "package.json"
       - "vite.config.js"
-      - "tailwind.config.js"
       - "backend/**"
       - "infra/**"
   workflow_dispatch:
@@ -25,6 +24,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: pulumi/actions@v7
+
+      # Pure-module smoke tests — no deps, no AWS. Gates the deploy.
+      - name: Test
+        run: node --test
 
       - name: Get config
         id: config
@@ -57,7 +60,15 @@ jobs:
       - name: Sync to S3
         env:
           BUCKET: ${{ steps.config.outputs.BUCKET }}
-        run: aws s3 sync dist/ s3://$BUCKET --delete
+        run: |
+          # Content-hashed assets: immutable, cache for a year.
+          aws s3 sync dist/ s3://$BUCKET --delete \
+            --cache-control 'public,max-age=31536000,immutable' \
+            --exclude '*' --include 'assets/*'
+          # Everything else (index.html, sw.js, manifest.json, icons): must revalidate.
+          aws s3 sync dist/ s3://$BUCKET --delete \
+            --cache-control 'no-cache' \
+            --exclude 'assets/*'
 
       - name: Invalidate CloudFront
         env:

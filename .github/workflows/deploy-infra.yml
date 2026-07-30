@@ -20,6 +20,10 @@ jobs:
       - uses: actions/checkout@v5
       - uses: pulumi/actions@v7
 
+      # Pure-module smoke tests — no deps, no AWS. Gates the preview/apply.
+      - name: Test
+        run: node --test
+
       - name: Get infra role
         id: roles
         env:

@@ -1,12 +1,23 @@
 import { GoogleGenAI } from "@google/genai";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, PutCommand, ScanCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
-import { researchPerson, runPersonJob, getPerson, listPeople, resumeStalledJobs } from "./people.js";
-import { extractVideoId, getVideoMetadata } from "./youtube.js";
+import { DynamoDBDocumentClient, PutCommand, QueryCommand, ScanCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
+import { researchPerson, getPerson, listPeople } from "./people.js";
+import { getVideoMetadata } from "./youtube.js";
+import { canonicalUrlForId, canonicalYoutubeUrl, isVideoId, videoIdFrom } from "./youtube-url.js";
 import { normaliseSpeakers, parseSpeakerTrailer, stripSpeakerTrailer } from "./tags.js";
 import { extractSpeakersFromMarkdown } from "./speakers.js";
-import { runBackfill } from "./backfill.js";
-import { DEFAULT_MODEL, DEFAULT_FPS, MEDIA_RESOLUTION_LOW, fpsForDuration } from "./constants.js";
+import {
+  DEFAULT_MODEL, DEFAULT_FPS, MEDIA_RESOLUTION_LOW, fpsForDuration,
+  SUMMARY_INDEX, SUMMARY_INDEX_PK, SUMMARY_INDEX_PK_VALUE,
+} from "./constants.js";
+import { buildModelChain } from "./people-pure.js";
+import { getAllowedModels } from "./models.js";
+import { generateWithFallback } from "./gemini.js";
+
+// The HTTP request core — every `GET`/`POST` the Function URL serves. Not a
+// Lambda entry point itself: `web.js` is, and it imports handleHttpRequest()
+// below. The internally-invoked jobs live on the worker function (worker.js)
+// and are unreachable from here.
 
 const SYSTEM_PROMPT = `Role: You are a no-nonsense Content Analyst. Your goal is to give me the "meat" of the video in plain English. Cut all fluff, repetitive points, and AI-sounding filler.
 
@@ -29,113 +40,6 @@ Tone: Clear, direct, and brief. Use plain Markdown. No fancy jargon.`;
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TABLE = process.env.DYNAMODB_TABLE;
 const SHARED_SECRET = process.env.SHARED_SECRET || "";
-
-const YOUTUBE_URL_RE = /^https:\/\/(www\.)?(youtube\.com\/watch\?v=[\w-]{11}|youtu\.be\/[\w-]{11})(\S*)?$/;
-
-const MODEL_CACHE_SUCCESS_TTL_MS = 24 * 60 * 60 * 1000;
-const MODEL_CACHE_FALLBACK_TTL_MS = 5 * 60 * 1000;
-
-// Used when ai.models.list() fails or returns nothing usable, so summarising
-// and request validation never hard-fail on a Google API hiccup.
-const FALLBACK_MODELS = [
-  { value: DEFAULT_MODEL, label: "Gemini Flash Latest" },
-  { value: "models/gemini-3-flash-preview", label: "Gemini 3 Flash" },
-  { value: "models/gemini-flash-lite-latest", label: "Gemini 3.1 Flash Lite" },
-  { value: "models/gemini-2.5-flash", label: "Gemini 2.5 Flash" },
-  { value: "models/gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite" },
-  { value: "models/gemma-4-31b-it", label: "Gemma 4 31B" },
-  { value: "models/gemma-4-26b-a4b-it", label: "Gemma 4 26B" },
-];
-
-function isWantedModel(name) {
-  const n = name.toLowerCase();
-  if (["tts", "image", "audio", "live"].some((bad) => n.includes(bad))) return false;
-  if (n.includes("gemma")) return true;
-  if (n.includes("gemini") && n.includes("flash")) return true;
-  return false;
-}
-
-// Pure: maps raw @google/genai Model objects to sorted [{ value, label }].
-// Exported so it can be smoke-tested without a network call.
-export function filterModels(rawModels) {
-  const wanted = (rawModels || []).filter(
-    (m) =>
-      m &&
-      typeof m.name === "string" &&
-      (m.supportedActions || []).includes("generateContent") &&
-      isWantedModel(m.name),
-  );
-  const toOption = (m) => ({ value: m.name, label: m.displayName || m.name });
-  const byNameDesc = (a, b) => b.value.localeCompare(a.value);
-  const gemini = wanted
-    .filter((m) => m.name.toLowerCase().includes("gemini"))
-    .map(toOption)
-    .sort(byNameDesc);
-  const gemma = wanted
-    .filter((m) => !m.name.toLowerCase().includes("gemini"))
-    .map(toOption)
-    .sort(byNameDesc);
-  return [...gemini, ...gemma];
-}
-
-let modelCache = { expires: 0, list: null };
-
-// Returns [{ value, label }] of allowed models. Cached in module scope:
-// 24h after a successful fetch, 5min after a fallback so it retries soon.
-async function getAllowedModels() {
-  if (modelCache.list && Date.now() < modelCache.expires) {
-    return modelCache.list;
-  }
-  let list;
-  let ttl;
-  try {
-    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY, apiVersion: "v1beta" });
-    const pager = await ai.models.list({});
-    const raw = [];
-    for await (const model of pager) {
-      raw.push(model);
-      if (raw.length >= 500) break;
-    }
-    list = filterModels(raw);
-    if (list.length === 0) {
-      console.warn("models.list returned no matching models, using fallback");
-      list = FALLBACK_MODELS;
-      ttl = MODEL_CACHE_FALLBACK_TTL_MS;
-    } else {
-      ttl = MODEL_CACHE_SUCCESS_TTL_MS;
-    }
-  } catch (err) {
-    console.error("models.list failed, using fallback", err);
-    list = FALLBACK_MODELS;
-    ttl = MODEL_CACHE_FALLBACK_TTL_MS;
-  }
-  modelCache = { expires: Date.now() + ttl, list };
-  return list;
-}
-
-const MAX_MODEL_ATTEMPTS = 4;
-
-// Copy of people.js's predicate (kept separate so people.js's own fallback
-// stays untouched). True for errors where trying a different model may help.
-function isRetryableModelError(err) {
-  const status = err?.status ?? err?.response?.status;
-  if (status === 429 || status === 503 || status === 500) return true;
-  const msg = String(err?.message || "").toLowerCase();
-  return msg.includes("resource_exhausted")
-    || msg.includes("quota")
-    || msg.includes("rate limit")
-    || msg.includes("unavailable")
-    || msg.includes("overloaded")
-    || msg.includes("high demand");
-}
-
-// Pure: ordered models to try — the requested model first, then the rest of
-// the allowed list, capped at MAX_MODEL_ATTEMPTS. Exported for smoke-testing.
-export function buildModelChain(requested, allowedModels) {
-  const values = (allowedModels || []).map((m) => m.value);
-  const ordered = [requested, ...values.filter((v) => v !== requested)];
-  return ordered.slice(0, MAX_MODEL_ATTEMPTS);
-}
 
 function extractTitle(markdown) {
   const match = markdown.match(/^#{1,2}\s+(.+)/m);
@@ -199,6 +103,9 @@ function summaryPayload(item, url, extra = {}) {
   };
 }
 
+// `url` is always canonical here — the POST handler rewrites it before calling,
+// so the dedupe GetItem, the item build and the race re-read below all address
+// the one row this video can have.
 async function summarise(url, requestedModel = DEFAULT_MODEL) {
   const existing = await ddb.send(new GetCommand({ TableName: TABLE, Key: { url } }));
   if (existing.Item) {
@@ -210,45 +117,42 @@ async function summarise(url, requestedModel = DEFAULT_MODEL) {
   }
 
   const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY, apiVersion: "v1beta" });
-  const videoId = extractVideoId(url);
+  const videoId = videoIdFrom(url);
   const promptText = `${SYSTEM_PROMPT}\n\nVideo URL: ${url}\nVideo ID: ${videoId}`;
-  const chain = buildModelChain(requestedModel, await getAllowedModels());
+  const allowedModels = await getAllowedModels();
+  const chain = buildModelChain(requestedModel, allowedModels.map((m) => m.value));
   const { fps, videoTitle, channelTitle, channelId } = await lookupVideoMeta(videoId);
 
-  let markdown;
-  let usedModel;
-  let lastErr;
-  for (const candidate of chain) {
-    try {
-      const response = await ai.models.generateContent({
-        model: candidate,
-        contents: [{
-          parts: [
-            { fileData: { fileUri: url }, videoMetadata: { fps } },
-            { text: promptText },
-          ],
-        }],
-        config: { mediaResolution: MEDIA_RESOLUTION_LOW },
-      });
-      console.log(`summarise tokens: model=${candidate} fps=${fps} total=${response.usageMetadata?.totalTokenCount ?? "?"}`);
-      markdown = response.text;
-      usedModel = candidate;
-      break;
-    } catch (err) {
-      lastErr = err;
-      if (!isRetryableModelError(err)) throw err;
-      console.warn(`model ${candidate} failed (${err?.status || ""} ${err?.message || ""}), trying next`);
-    }
-  }
+  // One try per model, no backoff and no timeout: someone is waiting on this
+  // response, so a quota error moves straight to the next model and anything
+  // else fails the request outright.
+  const outcome = await generateWithFallback(ai, {
+    chain,
+    contents: [{
+      parts: [
+        { fileData: { fileUri: url }, videoMetadata: { fps } },
+        { text: promptText },
+      ],
+    }],
+    config: { mediaResolution: MEDIA_RESOLUTION_LOW },
+    attempts: 1,
+    throwOnNonRetryable: true,
+    onResponse: (response, model) =>
+      console.log(`summarise tokens: model=${model} fps=${fps} total=${response.usageMetadata?.totalTokenCount ?? "?"}`),
+    onRetryableError: (err, model) =>
+      console.warn(`model ${model} failed (${err?.status || ""} ${err?.message || ""}), trying next`),
+  });
 
-  if (!usedModel) {
-    console.error("all models exhausted for summarise", lastErr);
+  if (!outcome.ok) {
+    console.error("all models exhausted for summarise", outcome.error);
     return {
       statusCode: 503,
       headers: JSON_HEADERS,
       body: JSON.stringify({ error: "all models are currently rate-limited — try again shortly" }),
     };
   }
+  const markdown = outcome.text;
+  const usedModel = outcome.model;
 
   // The speaker trailer is metadata, so it is stripped before the summary is
   // stored. If the model skipped it, re-read the finished summary with a cheap
@@ -276,6 +180,10 @@ async function summarise(url, requestedModel = DEFAULT_MODEL) {
     channelTitle,
     channelId,
     speakers,
+    // Constant partition key of the byCreatedAt index — this is the only place
+    // new rows get it, which is what makes the index a complete feed. It is an
+    // index key, not data: neither summaryPayload() nor listRow() returns it.
+    [SUMMARY_INDEX_PK]: SUMMARY_INDEX_PK_VALUE,
   };
 
   try {
@@ -313,45 +221,154 @@ async function listModels() {
   };
 }
 
-async function listSummaries() {
-  const result = await ddb.send(new ScanCommand({ TableName: TABLE, Limit: 100 }));
-  const summaries = (result.Items || [])
-    .sort((a, b) => b.createdAt - a.createdAt)
-    .slice(0, 50)
-    .map(({ url, title, date, createdAt, markdown, model, videoTitle, channelTitle, speakers }) => ({
-      url, title, date, createdAt, model,
-      videoTitle: videoTitle || null,
-      channelTitle: channelTitle || null,
-      speakers: speakers || [],
-      summary: (markdown || '').slice(0, 8000),
-    }));
+const LIST_LIMIT = 50;
 
+// The list cards render ~200 characters of the summary, so that is all the list
+// response carries. Shipping whole summaries (up to 8 KB × 50 rows) made every
+// cold load pay for the entire archive just so the detail page could read the
+// markdown out of memory; it fetches the full row from `?video=` instead.
+const LIST_MARKDOWN_CHARS = 300;
+
+// Whitelists what reaches the client: an attribute added to the item is
+// invisible to `GET /` until it is added here *and* to summaryPayload().
+// `gsi1pk` is deliberately absent — it is an index key, not data.
+function listRow({ url, title, date, createdAt, markdown, model, videoTitle, channelTitle, speakers }) {
+  const full = markdown || "";
+  const summary = full.slice(0, LIST_MARKDOWN_CHARS);
   return {
-    statusCode: 200,
-    headers: JSON_HEADERS,
-    body: JSON.stringify({ summaries }),
+    url, title, date, createdAt, model,
+    videoTitle: videoTitle || null,
+    channelTitle: channelTitle || null,
+    speakers: speakers || [],
+    summary,
+    // Tells the detail page the markdown it has is a snippet, so it fetches the
+    // real row before rendering or offering a download.
+    ...(summary.length < full.length ? { truncated: true } : {}),
   };
 }
 
-export async function handler(event, context) {
-  if (event && event.__personJob) {
-    const allowed = await getAllowedModels();
-    await runPersonJob(event.person, allowed.map((m) => m.value), context);
-    return { statusCode: 200, body: "ok" };
-  }
+// The real answer: the index is ordered by createdAt, so "newest 50" is exact
+// and costs one Query of 50 items however large the table gets.
+async function queryRecent() {
+  const result = await ddb.send(new QueryCommand({
+    TableName: TABLE,
+    IndexName: SUMMARY_INDEX,
+    KeyConditionExpression: "#pk = :pk",
+    ExpressionAttributeNames: { "#pk": SUMMARY_INDEX_PK },
+    ExpressionAttributeValues: { ":pk": SUMMARY_INDEX_PK_VALUE },
+    ScanIndexForward: false,
+    Limit: LIST_LIMIT,
+  }));
+  return result.Items || [];
+}
 
-  if (event && event.__backfill) {
-    const result = await runBackfill(event, context);
-    console.log("runBackfill", JSON.stringify(result));
-    return { statusCode: 200, body: JSON.stringify(result) };
-  }
+// The pre-index behaviour, kept only as a fallback: Limit caps items evaluated,
+// not matched, and Scan has no ordering guarantee, so past 100 rows this is an
+// arbitrary subset sorted among itself.
+async function scanRecent() {
+  const result = await ddb.send(new ScanCommand({ TableName: TABLE, Limit: 100 }));
+  return (result.Items || [])
+    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+    .slice(0, LIST_LIMIT);
+}
 
-  if (event && event.__resumeJobs) {
-    const result = await resumeStalledJobs();
-    console.log("resumeStalledJobs", JSON.stringify(result));
-    return { statusCode: 200, body: JSON.stringify(result) };
+// ── dual read, deletable ─────────────────────────────────────────────────────
+// The Query is correct but only sees rows carrying `gsi1pk`, and the index does
+// not exist at all until the Pulumi change is applied. Both gaps are transient,
+// so the Scan covers them: it runs when the Query fails outright, and tops up a
+// short page while the index is still sparse (a full page needs no help — those
+// 50 rows are the newest by definition).
+//
+// DELETE everything below the Query once the backfill is confirmed complete:
+//   aws dynamodb describe-table --table-name yt2txt-summaries \
+//     --query '{table: Table.ItemCount, index: Table.GlobalSecondaryIndexes[0].ItemCount}'
+// When the two counts match, scanRecent() and this merge are dead weight.
+async function recentSummaries() {
+  let queried = null;
+  try {
+    queried = await queryRecent();
+  } catch (err) {
+    console.warn(`${SUMMARY_INDEX} query failed, falling back to scan:`, err?.name || err);
   }
+  if (queried && queried.length >= LIST_LIMIT) return queried;
 
+  const scanned = await scanRecent();
+  if (!queried || queried.length === 0) return scanned;
+
+  const byUrl = new Map(scanned.map((row) => [row.url, row]));
+  for (const row of queried) byUrl.set(row.url, row);
+  return [...byUrl.values()]
+    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+    .slice(0, LIST_LIMIT);
+}
+
+async function listSummaries() {
+  const rows = await recentSummaries();
+  return {
+    statusCode: 200,
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ summaries: rows.map(listRow) }),
+  };
+}
+
+// The POST handler canonicalises before it writes, so every row written since
+// is keyed by exactly this URL and the GetItem is the answer.
+async function findByVideoId(id) {
+  const direct = await ddb.send(new GetCommand({ TableName: TABLE, Key: { url: canonicalUrlForId(id) } }));
+  if (direct.Item) return direct.Item;
+
+  // ── legacy fallback, deletable ─────────────────────────────────────────────
+  // Rows written before the canonicalisation change can still sit under
+  // `youtu.be/<id>` or a tracking-parameter suffix. `contains` narrows
+  // server-side; the authoritative match is videoIdFrom, which is what built
+  // the link. DELETE this Scan once the backfill's canonical-URL pass reports
+  // `nonCanonicalRemaining: 0` on a completed (`done: true`) run — at that
+  // point no row exists that the GetItem above cannot find.
+  let startKey;
+  do {
+    const page = await ddb.send(new ScanCommand({
+      TableName: TABLE,
+      FilterExpression: "contains(#u, :id)",
+      ExpressionAttributeNames: { "#u": "url" },
+      ExpressionAttributeValues: { ":id": id },
+      ...(startKey ? { ExclusiveStartKey: startKey } : {}),
+    }));
+    const match = (page.Items || []).find((row) => videoIdFrom(row.url) === id);
+    if (match) return match;
+    startKey = page.LastEvaluatedKey;
+  } while (startKey);
+
+  return null;
+}
+
+// GET ?video=<id> → one full summary. This is what makes /summary/<videoId>
+// permalinks outlive the newest-50 window the list response covers.
+async function getSummaryByVideo(id) {
+  if (!isVideoId(id)) {
+    return {
+      statusCode: 400,
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ error: "invalid video id" }),
+    };
+  }
+  const item = await findByVideoId(id);
+  if (!item) {
+    return {
+      statusCode: 404,
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ error: "not found" }),
+    };
+  }
+  return {
+    statusCode: 200,
+    headers: JSON_HEADERS,
+    body: JSON.stringify(summaryPayload(item, item.url)),
+  };
+}
+
+// Called by web.js once the event is known to be an HTTP request — this is the
+// whole public surface. Dispatch is by method, then by query string / body.
+export async function handleHttpRequest(event) {
   const method = event.requestContext?.http?.method || event.httpMethod || "GET";
 
   if (SHARED_SECRET) {
@@ -386,7 +403,15 @@ export async function handler(event, context) {
         }
         return await researchPerson(body.person, model, { force: !!body.force });
       }
-      if (!body.url || typeof body.url !== "string" || !YOUTUBE_URL_RE.test(body.url)) {
+      // Canonicalise before anything reads or writes. The table is keyed by
+      // `url`, so `youtu.be/<id>` and `watch?v=<id>&si=…` used to open two rows
+      // for one video; every path below sees the same
+      // `https://www.youtube.com/watch?v=<id>` instead. This is also the
+      // validation — no extractable video id, no request — which is why it
+      // replaced the old YOUTUBE_URL_RE: it accepts strictly more link shapes
+      // (shorts, live, embed, m./music.) and emits strictly one of them.
+      const url = canonicalYoutubeUrl(body.url);
+      if (!url) {
         return {
           statusCode: 400,
           headers: JSON_HEADERS,
@@ -401,7 +426,7 @@ export async function handler(event, context) {
           body: JSON.stringify({ error: "model not supported" }),
         };
       }
-      return await summarise(body.url, model);
+      return await summarise(url, model);
     }
 
     if (method === "GET") {
@@ -414,6 +439,9 @@ export async function handler(event, context) {
       }
       if (qs.person) {
         return await getPerson(qs.person);
+      }
+      if (qs.video) {
+        return await getSummaryByVideo(qs.video);
       }
       return await listSummaries();
     }

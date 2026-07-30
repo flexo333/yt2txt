@@ -1,8 +1,9 @@
 import { GoogleGenAI } from "@google/genai";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, PutCommand, QueryCommand, ScanCommand, GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
-import { searchVideosByPerson, getVideoMetadata, extractVideoId } from "./youtube.js";
+import { invokeWorker } from "./invoke.js";
+import { searchVideosByPerson, getVideoMetadata } from "./youtube.js";
+import { videoIdFrom } from "./youtube-url.js";
 import { DEFAULT_MODEL, MEDIA_RESOLUTION_LOW, fpsForDuration } from "./constants.js";
 import {
   MAX_VIDEOS,
@@ -14,16 +15,14 @@ import {
   canStartMeta,
   isStalled,
   buildModelChain,
-  isRetryableModelError,
   backoffDelayMs,
 } from "./people-pure.js";
+import { generateWithFallback } from "./gemini.js";
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
-const lambda = new LambdaClient({});
 
 const PEOPLE_TABLE = process.env.PEOPLE_TABLE;
 const PEOPLE_VIDEOS_TABLE = process.env.PEOPLE_VIDEOS_TABLE;
-const SELF_FUNCTION_NAME = process.env.AWS_LAMBDA_FUNCTION_NAME;
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
 
@@ -62,29 +61,6 @@ Respond with JSON only — no prose before or after.`;
 
 export function normalisePerson(name) {
   return name.trim().toLowerCase().replace(/\s+/g, " ");
-}
-
-// ── small async utilities ────────────────────────────────────────────────────
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-// Reject with a retryable "timed out" error if `promise` does not settle in time.
-function withTimeout(promise, ms) {
-  let timer;
-  const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`generateContent timed out after ${ms}ms`)), ms);
-  });
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
-}
-
-async function selfInvoke(payload) {
-  await lambda.send(new InvokeCommand({
-    FunctionName: SELF_FUNCTION_NAME,
-    InvocationType: "Event",
-    Payload: Buffer.from(JSON.stringify(payload)),
-  }));
 }
 
 // ── DynamoDB helpers ─────────────────────────────────────────────────────────
@@ -142,6 +118,9 @@ async function updateVideoRow(person, videoId, attrs) {
 
 // ── request entry point ──────────────────────────────────────────────────────
 
+// Runs on the *web* function (POST { action: "research" }): it writes the
+// queued job row and hands the work to the worker. Everything below this — the
+// job runner and the resumer — runs on the worker instead.
 export async function researchPerson(displayName, model, { force = false } = {}) {
   const person = normalisePerson(displayName);
   if (!person) {
@@ -169,7 +148,7 @@ export async function researchPerson(displayName, model, { force = false } = {})
     },
   }));
 
-  await selfInvoke({ __personJob: true, person });
+  await invokeWorker({ __personJob: true, person });
 
   return {
     statusCode: 202,
@@ -181,7 +160,7 @@ export async function researchPerson(displayName, model, { force = false } = {})
 // ── per-video summarisation ──────────────────────────────────────────────────
 
 function buildVideoContents(video, displayName, fps) {
-  const videoId = video.videoId || extractVideoId(video.url);
+  const videoId = video.videoId || videoIdFrom(video.url);
   return [{
     parts: [
       { fileData: { fileUri: video.url }, videoMetadata: { fps } },
@@ -192,38 +171,28 @@ function buildVideoContents(video, displayName, fps) {
 
 // Summarise one video, walking the model chain; each model retried with backoff
 // on a retryable error. Returns { markdown, model }. Throws when all exhausted.
+// Nobody is waiting on this call, so unlike the request path it is patient:
+// several tries per model, a timeout so a hung call cannot eat the run, and a
+// non-retryable error only costs this model, not the whole video.
 async function summariseVideo(ai, video, displayName, modelChain) {
   // durationSeconds is written by searchAndQueueVideos, so no extra API call.
   const fps = fpsForDuration(video.durationSeconds);
-  const contents = buildVideoContents(video, displayName, fps);
-  let lastErr;
-  for (const model of modelChain) {
-    for (let attempt = 0; attempt < MAX_RETRIES_PER_MODEL; attempt++) {
-      try {
-        const response = await withTimeout(
-          ai.models.generateContent({
-            model,
-            contents,
-            config: { mediaResolution: MEDIA_RESOLUTION_LOW },
-          }),
-          VIDEO_CALL_TIMEOUT_MS,
-        );
-        console.log(`summariseVideo tokens: ${video.videoId} model=${model} fps=${fps} total=${response.usageMetadata?.totalTokenCount ?? "?"}`);
-        const markdown = response.text
-          || response.candidates?.[0]?.content?.parts?.map((p) => p.text).filter(Boolean).join("\n")
-          || "";
-        if (!markdown) throw new Error("empty response");
-        return { markdown, model };
-      } catch (err) {
-        lastErr = err;
-        if (!isRetryableModelError(err)) break;
-        if (attempt < MAX_RETRIES_PER_MODEL - 1) {
-          await sleep(backoffDelayMs(attempt) + Math.floor(Math.random() * 1000));
-        }
-      }
-    }
-  }
-  throw lastErr || new Error("summariseVideo: all models exhausted");
+  const outcome = await generateWithFallback(ai, {
+    chain: modelChain,
+    contents: buildVideoContents(video, displayName, fps),
+    config: { mediaResolution: MEDIA_RESOLUTION_LOW },
+    attempts: MAX_RETRIES_PER_MODEL,
+    backoffMs: (attempt) => backoffDelayMs(attempt) + Math.floor(Math.random() * 1000),
+    timeoutMs: VIDEO_CALL_TIMEOUT_MS,
+    extractText: (response) => response.text
+      || response.candidates?.[0]?.content?.parts?.map((p) => p.text).filter(Boolean).join("\n")
+      || "",
+    requireText: true,
+    onResponse: (response, model) =>
+      console.log(`summariseVideo tokens: ${video.videoId} model=${model} fps=${fps} total=${response.usageMetadata?.totalTokenCount ?? "?"}`),
+  });
+  if (!outcome.ok) throw outcome.error || new Error("summariseVideo: all models exhausted");
+  return { markdown: outcome.text, model: outcome.model };
 }
 
 // ── meta synthesis ───────────────────────────────────────────────────────────
@@ -351,10 +320,11 @@ async function finalisePerson(ai, modelChain, person, displayName) {
 
 // ── the worker ───────────────────────────────────────────────────────────────
 
-// Idempotent and resumable. Called by one of three triggers: the initial
-// research request, a self-invoked continuation, or the safety-net resumer.
-// `allowedModels` is a string[] of model values; `context` is the Lambda
-// context object (used for remaining-time checks).
+// Idempotent and resumable. Called by one of three triggers, all of them
+// arriving as `{ __personJob: true }` on the worker function: the initial
+// research request (from the web function), a self-invoked continuation, or the
+// safety-net resumer. `allowedModels` is a string[] of model values; `context`
+// is the Lambda context object (used for remaining-time checks).
 export async function runPersonJob(person, allowedModels = [], context) {
   const remaining = () => (context?.getRemainingTimeInMillis?.() ?? Number.MAX_SAFE_INTEGER);
 
@@ -401,7 +371,7 @@ export async function runPersonJob(person, allowedModels = [], context) {
           progress: { phase: "summarising", current: doneCount, total, failures },
           lastProgressAt: Date.now(),
         });
-        await selfInvoke({ __personJob: true, person });
+        await invokeWorker({ __personJob: true, person });
         return;
       }
       await updatePerson(person, {
@@ -431,7 +401,7 @@ export async function runPersonJob(person, allowedModels = [], context) {
     // finalise phase
     if (!canStartMeta(remaining())) {
       await updatePerson(person, { lastProgressAt: Date.now() });
-      await selfInvoke({ __personJob: true, person });
+      await invokeWorker({ __personJob: true, person });
       return;
     }
     await finalisePerson(ai, modelChain, person, displayName);
@@ -449,6 +419,11 @@ export async function runPersonJob(person, allowedModels = [], context) {
 
 // Scans for active jobs idle past the stall threshold and self-invokes a
 // continuation for each. Recovers jobs whose Lambda was killed mid-run.
+//
+// The Scan is deliberate, unlike the one listSummaries() replaced with a Query:
+// yt2txt-people holds one row per tracked person (tens, not thousands), there
+// is no Limit truncating the result, and the filter is on `status` rather than
+// on recency — an index would buy nothing at this size.
 export async function resumeStalledJobs() {
   const res = await ddb.send(new ScanCommand({
     TableName: PEOPLE_TABLE,
@@ -462,7 +437,7 @@ export async function resumeStalledJobs() {
   for (const row of rows) {
     if (!isStalled(row, now)) continue;
     console.warn(`resuming stalled job: "${row.person}" (status=${row.status})`);
-    await selfInvoke({ __personJob: true, person: row.person });
+    await invokeWorker({ __personJob: true, person: row.person });
     resumed++;
   }
   return { scanned: rows.length, resumed };
@@ -484,6 +459,10 @@ export async function getPerson(displayName) {
   };
 }
 
+// Also a deliberate Scan: one row per tracked person, so the Limit of 100 is a
+// guard rail rather than a window, and the whole table is the answer. If the
+// people list ever outgrows a page it needs the same treatment as the summaries
+// feed — a constant-key index sorted by lastRunAt — not a bigger Limit.
 export async function listPeople() {
   const res = await ddb.send(new ScanCommand({ TableName: PEOPLE_TABLE, Limit: 100 }));
   const items = (res.Items || []).map(({ person, displayName, status, lastRunAt, progress }) => ({

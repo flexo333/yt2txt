@@ -14,6 +14,18 @@ export const MEDIA_RESOLUTION_LOW = "MEDIA_RESOLUTION_LOW";
 // YOUTUBE_API_KEY) — the middle of the ladder, safe for a typical-length video.
 export const DEFAULT_FPS = 0.2;
 
+// ── yt2txt-summaries recency index ───────────────────────────────────────────
+// The summaries table is keyed by `url`, which says nothing about recency, so
+// "the newest 50" cannot come from the table itself — a Scan returns items in
+// internal hash order and its Limit caps what is *evaluated*, not what matches.
+// The GSI carries one constant partition key (every summary shares a partition,
+// which is fine at this scale) sorted by `createdAt`, so a backwards Query is
+// exactly the feed. Shared by the write path and the read path in handler.js
+// and by the backfill that stamps the key onto pre-index rows.
+export const SUMMARY_INDEX = "byCreatedAt";
+export const SUMMARY_INDEX_PK = "gsi1pk";
+export const SUMMARY_INDEX_PK_VALUE = "SUMMARY";
+
 // Pure: frames-per-second to sample for a video of `seconds` length.
 export function fpsForDuration(seconds) {
   const s = Number(seconds);

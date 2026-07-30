@@ -25,3 +25,12 @@ export function navigate(path, { replace = false } = {}) {
   window.history[replace ? 'replaceState' : 'pushState']({}, '', path);
   window.dispatchEvent(new PopStateEvent('popstate'));
 }
+
+// Click handler for in-app <a href> links: intercept plain left-clicks so they
+// route client-side, and let modified clicks (new tab, new window, download)
+// fall through to native browser handling.
+export function linkClick(e, href) {
+  if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+  e.preventDefault();
+  navigate(href);
+}

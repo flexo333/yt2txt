@@ -1,4 +1,5 @@
 import { normaliseSpeakers, parseSpeakerTrailer, parseSpeakerList } from "./tags.js";
+import { withTimeout } from "./people-pure.js";
 
 // Fallback path for speaker tags. The summarise prompt asks for a trailer line
 // naming the speakers; when a model ignores it (the chain falls back to Gemma,
@@ -23,14 +24,6 @@ const MAX_MARKDOWN_CHARS = 12000;
 // since an empty tag list is an acceptable outcome.
 const EXTRACT_TIMEOUT_MS = 20000;
 
-function withTimeout(promise, ms) {
-  let timer;
-  const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`speaker extraction timed out after ${ms}ms`)), ms);
-  });
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
-}
-
 // Never throws. Returns a (possibly empty) name list when the call succeeded,
 // and null when the call itself failed — a timeout, a rate limit, a dead model.
 // The two are kept distinct because "the model named nobody" is a final answer
@@ -48,6 +41,7 @@ export async function extractSpeakersFromMarkdown(ai, model, markdown, { timeout
         }],
       }),
       timeoutMs,
+      `speaker extraction timed out after ${timeoutMs}ms`,
     );
     const raw = String(response.text || "").trim();
     // Prefer the requested `Speakers: …` form; a bare list is accepted too, but
