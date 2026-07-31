@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { listPeople, getPerson, researchPerson } from '../api.js';
 import Markdown from '../components/Markdown.jsx';
+import { linkClick } from '../useLocation.js';
+import { summaryPath } from '../paths.js';
 
 // Person research: kick off a job, then poll it to completion. The job runs
 // server-side across several Lambda invocations, so the only way to follow it
@@ -126,6 +128,15 @@ const People = () => {
               <div className="history-date">{(v.publishedAt || '').slice(0, 10)}</div>
               <a href={v.url} target="_blank" rel="noopener noreferrer" className="history-title">{v.title}</a>
               <span className="history-url">{v.channelTitle}</span>
+              {v.url && (
+                <a
+                  className="history-url"
+                  href={summaryPath({ url: v.url })}
+                  onClick={(e) => linkClick(e, summaryPath({ url: v.url }))}
+                >
+                  Full summary →
+                </a>
+              )}
               {v.markdown && (
                 <details>
                   <summary>Summary</summary>
