@@ -3,6 +3,8 @@
 // @google/genai imports, so this module can be imported and smoke-tested under
 // local `node` (see people-pure.test.mjs) — keep it that way.
 
+import { PROMPT_VERSION } from "./constants.js";
+
 // ── Timing / sizing constants ────────────────────────────────────────────────
 export const MAX_VIDEOS = 8;                  // videos summarised per run
 export const VIDEO_CALL_TIMEOUT_MS = 180_000; // per-video generateContent ceiling
@@ -15,9 +17,24 @@ export const MAX_MODEL_ATTEMPTS = 4;          // models tried per generateConten
 
 // ── Job-state predicates ─────────────────────────────────────────────────────
 
-// Video rows still needing a summary.
-export function pickPendingVideos(videoRows) {
-  return (videoRows || []).filter((v) => v && v.status === "pending");
+// Video rows a person job still has to process: pending ones, plus done rows
+// whose video has no summaries-table row at all (researched under the
+// pre-merge pipeline, which never wrote one — they self-heal here). The
+// runner looks up which done rows lack a summary and passes the ids in, so
+// this stays pure. A stale-but-present summary is NOT in this set: it
+// upgrades only when its video is being processed anyway.
+export function pickVideosToProcess(videoRows, missingSummaryIds) {
+  const missing = new Set(missingSummaryIds || []);
+  return (videoRows || []).filter(
+    (v) => v && (v.status === "pending" || (v.status === "done" && missing.has(v.videoId))),
+  );
+}
+
+// A summaries row written by an older SYSTEM_PROMPT revision (or before
+// promptVersion existed). Only person jobs act on staleness — the web
+// cache-hit path serves stale rows as-is, because someone is waiting.
+export function isStaleSummary(row) {
+  return !row || !(row.promptVersion >= PROMPT_VERSION);
 }
 
 // True when there is enough Lambda time left to start another video summary.

@@ -3,21 +3,23 @@ import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, PutCommand, QueryCommand, ScanCommand, GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { invokeWorker } from "./invoke.js";
 import { searchVideosByPerson, getVideoMetadata } from "./youtube.js";
-import { videoIdFrom } from "./youtube-url.js";
-import { DEFAULT_MODEL, MEDIA_RESOLUTION_LOW, fpsForDuration } from "./constants.js";
+import { canonicalUrlForId } from "./youtube-url.js";
+import { DEFAULT_MODEL } from "./constants.js";
 import {
   MAX_VIDEOS,
   VIDEO_CALL_TIMEOUT_MS,
   MAX_CONTINUATIONS,
   MAX_RETRIES_PER_MODEL,
-  pickPendingVideos,
+  pickVideosToProcess,
+  isStaleSummary,
   canStartVideo,
   canStartMeta,
   isStalled,
   buildModelChain,
   backoffDelayMs,
 } from "./people-pure.js";
-import { generateWithFallback } from "./gemini.js";
+import { generateSummaryItem, getSummaryByUrl, putFreshSummary, putUpgradedSummary } from "./summarise-core.js";
+import { sliceForSpeaker } from "./speaker-section.js";
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
@@ -25,21 +27,6 @@ const PEOPLE_TABLE = process.env.PEOPLE_TABLE;
 const PEOPLE_VIDEOS_TABLE = process.env.PEOPLE_VIDEOS_TABLE;
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
-
-const VIDEO_PROMPT = `Role: You are a no-nonsense Content Analyst extracting what a specific named person says in a YouTube video.
-
-Task: Analyze the video at the provided URL. Focus on what the named person expresses — their viewpoints, arguments, predictions, and advice. Ignore filler, ads, and content from other participants unless it provides essential context.
-
-Output (plain Markdown):
-1. '# Title' — the video's title.
-2. 'Speaker focus: <name>' — the person we're tracking.
-3. 'Key viewpoints' — 3–6 bullets capturing this person's distinctive points. Each bullet ≤ 25 words.
-4. 'Notable quotes' — up to 3 short verbatim-ish quotes with timestamp links like [MM:SS](https://youtu.be/VIDEO_ID?t=SECONDS).
-5. 'Topics covered' — comma-separated short tags.
-
-Use exactly the Video ID provided below in timestamp links. Do not infer it from the content.
-
-Keep it tight. No preamble, no recap, no filler.`;
 
 const META_PROMPT = (displayName) => `Role: Synthesis analyst. You are given multiple summaries of videos featuring ${displayName}. Produce a single overview of their recurring viewpoints across these videos.
 
@@ -56,6 +43,8 @@ The markdown should contain:
 - 'Distinctive views' (what makes this person's perspective notable)
 - 'Evolution / changes of mind' (if any, else omit)
 - 'Best video to watch' (one line, naming the chosen video)
+
+The summaries may include other speakers' content; attribute to ${displayName} only what they themselves say.
 
 Respond with JSON only — no prose before or after.`;
 
@@ -159,40 +148,31 @@ export async function researchPerson(displayName, model, { force = false } = {})
 
 // ── per-video summarisation ──────────────────────────────────────────────────
 
-function buildVideoContents(video, displayName, fps) {
-  const videoId = video.videoId || videoIdFrom(video.url);
-  return [{
-    parts: [
-      { fileData: { fileUri: video.url }, videoMetadata: { fps } },
-      { text: `Speaker to focus on: ${displayName}\nVideo URL: ${video.url}\nVideo ID: ${videoId}\n\n${VIDEO_PROMPT}` },
-    ],
-  }];
-}
+// One summaries-table row for this video, current prompt version: reuse it if
+// it is already there and current (no Gemini call at all — the whole point of
+// the merge), otherwise watch the video once through the shared core and
+// write. A stale row is upgraded in place, preserving its feed position; a
+// fresh row races politely with any concurrent writer. Throws when the model
+// chain is exhausted — the caller marks the video row as errored.
+async function summaryRowForVideo(ai, video, modelChain) {
+  const canonicalUrl = canonicalUrlForId(video.videoId);
+  const existing = await getSummaryByUrl(canonicalUrl);
+  if (existing && !isStaleSummary(existing)) return existing;
 
-// Summarise one video, walking the model chain; each model retried with backoff
-// on a retryable error. Returns { markdown, model }. Throws when all exhausted.
-// Nobody is waiting on this call, so unlike the request path it is patient:
-// several tries per model, a timeout so a hung call cannot eat the run, and a
-// non-retryable error only costs this model, not the whole video.
-async function summariseVideo(ai, video, displayName, modelChain) {
-  // durationSeconds is written by searchAndQueueVideos, so no extra API call.
-  const fps = fpsForDuration(video.durationSeconds);
-  const outcome = await generateWithFallback(ai, {
-    chain: modelChain,
-    contents: buildVideoContents(video, displayName, fps),
-    config: { mediaResolution: MEDIA_RESOLUTION_LOW },
+  // Nobody is waiting on a person job, so unlike the request path it is
+  // patient: several tries per model, backoff with jitter, and a timeout so a
+  // hung call cannot eat the run.
+  const outcome = await generateSummaryItem(ai, canonicalUrl, modelChain, {
     attempts: MAX_RETRIES_PER_MODEL,
     backoffMs: (attempt) => backoffDelayMs(attempt) + Math.floor(Math.random() * 1000),
     timeoutMs: VIDEO_CALL_TIMEOUT_MS,
-    extractText: (response) => response.text
-      || response.candidates?.[0]?.content?.parts?.map((p) => p.text).filter(Boolean).join("\n")
-      || "",
-    requireText: true,
-    onResponse: (response, model) =>
-      console.log(`summariseVideo tokens: ${video.videoId} model=${model} fps=${fps} total=${response.usageMetadata?.totalTokenCount ?? "?"}`),
+    logLabel: `personVideo ${video.videoId}`,
   });
   if (!outcome.ok) throw outcome.error || new Error("summariseVideo: all models exhausted");
-  return { markdown: outcome.text, model: outcome.model };
+
+  if (existing) return putUpgradedSummary(outcome.item, existing);
+  const { item } = await putFreshSummary(outcome.item);
+  return item;
 }
 
 // ── meta synthesis ───────────────────────────────────────────────────────────
@@ -365,7 +345,15 @@ export async function runPersonJob(person, allowedModels = [], context) {
     let doneCount = videos.filter((v) => v.status === "done" && v.markdown).length;
     let failures = videos.filter((v) => v.status === "error").length;
 
-    for (const video of pickPendingVideos(videos)) {
+    // Self-heal set: done rows from the pre-merge pipeline have person-video
+    // markdown but no summaries-table row — one GetItem each (≤ MAX_VIDEOS).
+    const missingSummaryIds = [];
+    for (const v of videos) {
+      if (v.status !== "done") continue;
+      if (!(await getSummaryByUrl(canonicalUrlForId(v.videoId)))) missingSummaryIds.push(v.videoId);
+    }
+
+    for (const video of pickVideosToProcess(videos, missingSummaryIds)) {
       if (!canStartVideo(remaining())) {
         await updatePerson(person, {
           progress: { phase: "summarising", current: doneCount, total, failures },
@@ -379,11 +367,12 @@ export async function runPersonJob(person, allowedModels = [], context) {
         lastProgressAt: Date.now(),
       });
       try {
-        const { markdown, model } = await summariseVideo(ai, video, displayName, modelChain);
+        const row = await summaryRowForVideo(ai, video, modelChain);
+        const slice = sliceForSpeaker(row.markdown, displayName) ?? row.markdown;
         await updateVideoRow(person, video.videoId, {
-          status: "done", markdown, model, summarisedAt: Date.now(),
+          status: "done", markdown: slice, model: row.model, summarisedAt: Date.now(),
         });
-        doneCount++;
+        if (video.status !== "done") doneCount++; // a self-healed row was already counted
       } catch (err) {
         console.error(`summariseVideo failed: ${person}/${video.videoId}`, err);
         await updateVideoRow(person, video.videoId, {
