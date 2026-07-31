@@ -19,8 +19,6 @@ const FALLBACK_MODEL_OPTIONS = [
   { label: 'Gemini 3.1 Flash Lite', value: 'models/gemini-flash-lite-latest' },
   { label: 'Gemini 2.5 Flash', value: 'models/gemini-2.5-flash' },
   { label: 'Gemini 2.5 Flash Lite', value: 'models/gemini-2.5-flash-lite' },
-  { label: 'Gemma 4 31B', value: 'models/gemma-4-31b-it' },
-  { label: 'Gemma 4 26B', value: 'models/gemma-4-26b-a4b-it' },
 ];
 
 // Model used for links arriving via the PWA share target — that flow has no UI

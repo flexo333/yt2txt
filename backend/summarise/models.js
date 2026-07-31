@@ -18,39 +18,31 @@ const FALLBACK_MODELS = [
   { value: "models/gemini-flash-lite-latest", label: "Gemini 3.1 Flash Lite" },
   { value: "models/gemini-2.5-flash", label: "Gemini 2.5 Flash" },
   { value: "models/gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite" },
-  { value: "models/gemma-4-31b-it", label: "Gemma 4 31B" },
-  { value: "models/gemma-4-26b-a4b-it", label: "Gemma 4 26B" },
 ];
 
+// Gemini Flash family only. Gemma was dropped 2026-07-31: it could never be
+// reached as a fallback (buildModelChain caps at 4 and the list is
+// Gemini-first), and its missing responseSchema support was all that kept the
+// speaker-trailer machinery alive — see the structured-output spec.
 function isWantedModel(name) {
   const n = name.toLowerCase();
   if (["tts", "image", "audio", "live"].some((bad) => n.includes(bad))) return false;
-  if (n.includes("gemma")) return true;
-  if (n.includes("gemini") && n.includes("flash")) return true;
-  return false;
+  return n.includes("gemini") && n.includes("flash");
 }
 
 // Pure: maps raw @google/genai Model objects to sorted [{ value, label }].
 // Exported so it can be smoke-tested without a network call.
 export function filterModels(rawModels) {
-  const wanted = (rawModels || []).filter(
-    (m) =>
-      m &&
-      typeof m.name === "string" &&
-      (m.supportedActions || []).includes("generateContent") &&
-      isWantedModel(m.name),
-  );
-  const toOption = (m) => ({ value: m.name, label: m.displayName || m.name });
-  const byNameDesc = (a, b) => b.value.localeCompare(a.value);
-  const gemini = wanted
-    .filter((m) => m.name.toLowerCase().includes("gemini"))
-    .map(toOption)
-    .sort(byNameDesc);
-  const gemma = wanted
-    .filter((m) => !m.name.toLowerCase().includes("gemini"))
-    .map(toOption)
-    .sort(byNameDesc);
-  return [...gemini, ...gemma];
+  return (rawModels || [])
+    .filter(
+      (m) =>
+        m &&
+        typeof m.name === "string" &&
+        (m.supportedActions || []).includes("generateContent") &&
+        isWantedModel(m.name),
+    )
+    .map((m) => ({ value: m.name, label: m.displayName || m.name }))
+    .sort((a, b) => b.value.localeCompare(a.value));
 }
 
 let modelCache = { expires: 0, list: null };
