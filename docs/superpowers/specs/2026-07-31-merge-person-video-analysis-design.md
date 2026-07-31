@@ -29,9 +29,7 @@ Video ingestion is the dominant cost (free-tier TPM throttling is why `mediaReso
 
 ### 1. Enriched prompt
 
-`SYSTEM_PROMPT` moves to the shared core and gains one instruction between Key Insights and the Speakers trailer:
-
-> 6. What each speaker argues — only when two or more people speak: `## What each speaker argues`, then a `### <Name>` subsection per named speaker with 2–4 bullets of their distinctive viewpoints (≤25 words each) and up to 2 short verbatim-ish quotes with timestamp links. Use exactly the same names here as in the Speakers line. If only one person speaks, emit instead `## Notable quotes`: up to 3 short verbatim-ish quotes with timestamp links, no per-speaker subsections.
+`SYSTEM_PROMPT` moves to the shared core. Its full text — including the `## What each speaker argues` section this spec's slicer depends on — is defined in `2026-07-31-summary-format-rethink-design.md`, which supersedes the insertion originally described here (the format was redesigned around a replace-watching claim ledger in the same review cycle; the per-speaker section, its heading, its ≤25-word bullets, and its name-consistency rule are unchanged). One amendment from the follow-up interview is folded into that prompt text: when only one person speaks, the model emits `## Notable quotes` — up to 3 short verbatim-ish quotes with timestamp links, no per-speaker subsections — instead of omitting the section (the claim ledger covers a solo speaker's arguments but does not guarantee verbatim quotes).
 
 The Speakers trailer keeps its slot as the final line, still parsed and stripped into `speakers[]` by `tags.js`.
 
@@ -41,7 +39,7 @@ The per-request text gains a hint block, included only when the YouTube metadata
 
 `VIDEO_PROMPT`, `buildVideoContents`, and `summariseVideo` in `people.js` are deleted.
 
-Cost: video ingestion unchanged; output grows a few hundred tokens on multi-speaker videos and a few quotes' worth on solo ones.
+Cost: video ingestion unchanged; output growth under the new format is covered by the format-rethink spec (minor next to ingestion).
 
 ### 2. Shared core — `backend/summarise/summarise-core.js`
 
