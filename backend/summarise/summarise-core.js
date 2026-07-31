@@ -174,6 +174,11 @@ export async function putUpgradedSummary(item, existing) {
     ...item,
     createdAt: typeof existing?.createdAt === "number" ? existing.createdAt : item.createdAt,
     date: existing?.date || item.date,
+    // A failed metadata lookup must not erase metadata already known good on
+    // the existing row.
+    videoTitle: item.videoTitle ?? existing?.videoTitle ?? null,
+    channelTitle: item.channelTitle ?? existing?.channelTitle ?? null,
+    channelId: item.channelId ?? existing?.channelId ?? null,
   };
   await ddb.send(new PutCommand({ TableName: TABLE, Item: upgraded }));
   return upgraded;

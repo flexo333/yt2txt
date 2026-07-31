@@ -102,6 +102,18 @@ test("request path: a non-retryable error is rethrown without advancing", async 
   assert.equal(requests.length, 1);
 });
 
+test("request path: an empty response advances the chain instead of throwing a 500", async () => {
+  const { ai, models } = fakeAi([respond(""), respond("real text")]);
+  const out = await generateWithFallback(ai, requestPathOpts({
+    chain: ["m/1", "m/2"],
+    requireText: true,
+  }));
+  assert.equal(out.ok, true);
+  assert.equal(out.model, "m/2");
+  assert.equal(out.text, "real text");
+  assert.deepEqual(models(), ["m/1", "m/2"]);
+});
+
 test("request path: onResponse sees the response and the model that answered", async () => {
   const seen = [];
   const { ai } = fakeAi([rateLimit, respond("x")]);

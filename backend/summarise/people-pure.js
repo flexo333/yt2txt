@@ -12,7 +12,9 @@ export const VIDEO_TIME_RESERVE_MS = 210_000; // min Lambda time left to start a
 export const META_TIME_RESERVE_MS = 120_000;  // min Lambda time left to start meta
 export const MAX_CONTINUATIONS = 12;          // self-invoke loop guard
 export const STALL_THRESHOLD_MS = 600_000;    // job considered stalled after this idle
-export const MAX_RETRIES_PER_MODEL = 3;       // per-model attempts in summariseVideo
+// Worst case: a persistently unparseable payload can cost up to
+// MAX_MODEL_ATTEMPTS × MAX_RETRIES_PER_MODEL video watches on the worker path.
+export const MAX_RETRIES_PER_MODEL = 3;       // per-model attempts for a person-job video summary
 export const MAX_MODEL_ATTEMPTS = 4;          // models tried per generateContent
 
 // ── Job-state predicates ─────────────────────────────────────────────────────

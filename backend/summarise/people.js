@@ -168,7 +168,7 @@ async function summaryRowForVideo(ai, video, modelChain) {
     timeoutMs: VIDEO_CALL_TIMEOUT_MS,
     logLabel: `personVideo ${video.videoId}`,
   });
-  if (!outcome.ok) throw outcome.error || new Error("summariseVideo: all models exhausted");
+  if (!outcome.ok) throw outcome.error || new Error("summaryRowForVideo: all models exhausted");
 
   if (existing) return putUpgradedSummary(outcome.item, existing);
   const { item } = await putFreshSummary(outcome.item);
@@ -374,7 +374,7 @@ export async function runPersonJob(person, allowedModels = [], context) {
         });
         if (video.status !== "done") doneCount++; // a self-healed row was already counted
       } catch (err) {
-        console.error(`summariseVideo failed: ${person}/${video.videoId}`, err);
+        console.error(`summaryRowForVideo failed: ${person}/${video.videoId}`, err);
         await updateVideoRow(person, video.videoId, {
           status: "error",
           errorMessage: String(err?.message || err).slice(0, 500),

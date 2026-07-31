@@ -269,8 +269,7 @@ export async function runBackfill(event = {}, _context) {
     const removed = await migrateCanonicalUrls(rows.filter(needsCanonicalUrl), { dryRun }, result);
     const live = removed.size ? rows.filter((row) => !removed.has(row.url)) : rows;
 
-    // Cheapest pass next: if a later one runs out of time mid-page, the rows
-    // it already visited are at least in the feed.
+    // Cheapest pass next: pure DynamoDB, no API quota.
     result.indexUpdated += await backfillIndexKeys(live.filter(needsIndexKey), { dryRun });
 
     result.metaUpdated += await backfillVideoMeta(live.filter(needsVideoMeta), { dryRun });
