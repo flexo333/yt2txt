@@ -141,14 +141,16 @@ test("worker path: retries the same model with backoff before advancing", async 
   assert.deepEqual(waits, [0, 1]);
 });
 
-test("worker path: an empty response moves to the next model, without backoff", async () => {
+test("worker path: an empty response is retried on the same model before advancing", async () => {
   const waits = [];
   const { ai, models } = fakeAi([() => ({ text: "" }), respond("real answer")]);
   const out = await generateWithFallback(ai, workerPathOpts(waits));
   assert.equal(out.text, "real answer");
-  assert.equal(out.model, "m/2");
-  assert.deepEqual(models(), ["m/1", "m/2"]);
-  assert.deepEqual(waits, []);
+  // Empty response is now retryable (see isRetryableModelError), so the second
+  // attempt lands on the same model rather than advancing the chain.
+  assert.equal(out.model, "m/1");
+  assert.deepEqual(models(), ["m/1", "m/1"]);
+  assert.deepEqual(waits, [0]);
 });
 
 test("worker path: text falls back to the candidate parts", async () => {

@@ -64,7 +64,12 @@ export function isRetryableModelError(err) {
     || msg.includes("overloaded")
     || msg.includes("high demand")
     || msg.includes("timed out")
-    || msg.includes("timeout");
+    || msg.includes("timeout")
+    // gemini.js throws this when requireText finds nothing usable — including a
+    // structured-output payload that failed to parse. A model that returned
+    // junk once may return valid JSON on the next attempt, and on the request
+    // path (throwOnNonRetryable) this must advance the chain, not 500.
+    || msg.includes("empty response");
 }
 
 // Exponential backoff (ms) for retry attempt N (0-based), before jitter.

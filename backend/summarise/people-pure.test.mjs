@@ -56,6 +56,7 @@ test("isRetryableModelError classifies quota / 5xx / timeout as retryable", () =
   assert.equal(isRetryableModelError({ status: 503 }), true);
   assert.equal(isRetryableModelError({ message: "RESOURCE_EXHAUSTED" }), true);
   assert.equal(isRetryableModelError({ message: "request timed out" }), true);
+  assert.equal(isRetryableModelError(new Error("empty response")), true);
   assert.equal(isRetryableModelError({ status: 400, message: "FAILED_PRECONDITION" }), false);
   assert.equal(isRetryableModelError({ status: 404 }), false);
 });
