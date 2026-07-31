@@ -7,6 +7,27 @@ in under ten lines. If a choice is obvious from reading the code, it does not be
 The five entries below were reconstructed on 2026-07-30 from the code and from CLAUDE.md,
 and dated to the commit that shipped each choice rather than to the day it was argued.
 
+## 2026-07-31 — Gemini-only, structured output instead of the speaker trailer
+
+**Context:** The trailer contract existed solely because the model chain could in theory fall back to Gemma, which lacks `responseSchema` — but five Gemini models fill the 4-slot chain, so Gemma was unreachable except hand-picked.
+**Options:** Keep the trailer; keep Gemma reachable by raising `MAX_MODEL_ATTEMPTS`; go Gemini-only with `responseSchema`.
+**Choice:** Gemini-only. Every summarise call requests `{ title, markdown, speakers[] }` via `responseSchema` (`summary-schema.js`); a payload that fails to parse is classified retryable ("empty response") and advances the chain. Deleted: `speakers.js`, `extractTitle`, the trailer parse/strip, the backfill's speakers pass. `@google/genai` pinned to 1.50.1.
+**Consequences:** Loses the hand-picked free-tier quota escape hatch. `markdown` keeps its `# Title` heading (the UI renders only markdown). Supersedes the 2026-07-29 "Speaker tags ride on a prompt contract" entry.
+
+## 2026-07-31 — Summaries replace watching: the claim ledger format
+
+**Context:** `SYSTEM_PROMPT` was optimised for triage (word caps, Signal-to-Noise, Clickbait scores) but the summaries are read instead of watching.
+**Options:** Thematic sections (closest to today); a narrative brief (best read, least skimmable); a numbered claim ledger.
+**Choice:** The ledger — `## Claims`, every substantive claim with reasoning, numbers, caveats and a timestamp link, scaled to content with no fixed cap. Kept: `# Title`, The Bottom Line (≤100 words, feeds the 300-char preview), 3 Aha! bullets. Dropped: the metrics. Multi-speaker videos add `## What each speaker argues`; solo videos add `## Notable quotes`.
+**Consequences:** Output length scales with density (minor next to video-ingestion tokens). Nothing parses `## Claims`. `PROMPT_VERSION = 2` describes this text; any prompt edit bumps it.
+
+## 2026-07-31 — One summary per video across both pipelines
+
+**Context:** Person research watched videos into its own `yt2txt-people-videos` rows — invisible to history, untagged, and paying video-ingestion tokens even when a summary already existed.
+**Options:** Keep two pipelines; person-specific prompt with a summaries-table write; one shared prompt/core with per-person slices.
+**Choice:** Shared core (`summarise-core.js`) + cached slices: person jobs reuse a current summaries row for free, upgrade a stale one in place (createdAt/date preserved, invisible to the feed), and store `sliceForSpeaker(markdown) ?? whole markdown` per person. Done rows with no summaries row self-heal on the next run; a `PROMPT_VERSION` bump alone never triggers set-wide re-watches. Races cost a duplicate watch — accepted, no locks.
+**Consequences:** Researched videos appear in history with tags; a video is watched at most once per prompt version per path-winner. The web cache-hit path never upgrades.
+
 ## 2026-07-30 — Fork `pulumi-static-site` to unblock pulumi-aws 7.x
 
 **Context:** An `AuthType: NONE` Function URL needs a second policy statement, `lambda:InvokeFunction` conditioned on `lambda:InvokedViaFunctionUrl`. Expressing it needs `invoked_via_function_url` on `aws.lambda_.Permission`, which landed in pulumi-aws **7.16.0** — absent from 6.x (which ended at 6.83.4) and from 7.0–7.15. `pulumi-static-site` v0.1.0 pins `pulumi-aws<7.0.0`, so pip could not resolve the bump.
@@ -28,7 +49,7 @@ and dated to the commit that shipped each choice rather than to the day it was a
 **Choice:** Keep `url` as the key and canonicalise to `https://www.youtube.com/watch?v=<id>` before the dedupe `GetItem`, the item build and the race-loser re-read. DynamoDB cannot change a key schema, and the canonical URL bijects with the video id, so it carries the same uniqueness without a table migration.
 **Consequences:** The canonicaliser and id extractor exist exactly once, in `backend/summarise/youtube-url.js` — dependency-free so the Lambda, the browser bundle and bare `node` all import it. Because the Lambda bundle is `backend/summarise/` alone, `src/` imports *up* into it and never the reverse. Existing rows needed the one-shot backfill; `findByVideoId()` is now a bare `GetItem` with no `Scan` fallback, so every row must sit at its canonical key.
 
-## 2026-07-29 — Speaker tags ride on a prompt contract, not a response schema
+## 2026-07-29 — Speaker tags ride on a prompt contract, not a response schema (superseded 2026-07-31)
 
 **Context:** Summaries needed structured speaker names alongside free markdown.
 **Options:** Gemini structured output via `responseSchema`; a trailing `Speakers: A, B` line in the prompt contract, parsed and stripped; a second text-only call per summary.

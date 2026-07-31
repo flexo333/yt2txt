@@ -13,11 +13,10 @@ One line per item, each pointing at the code it came from.
 - A cache hit returns the stored summary whatever model was asked for, labelled with the old model — either say so in the UI or key the cache on `(videoId, model)` (`backend/summarise/handler.js:109`)
 - The selected person lives in `useState`, not the URL, so it is the only view in the app you cannot link to or refresh — `/people/<name>` would finish the History-API migration (`src/pages/People.jsx:12`)
 - The stall resumer fires `rate(3 minutes)` against a 10-minute stall threshold — ~14,400 invocations a month to detect something that cannot be true more than a fifth of the time; `rate(5 minutes)` loses nothing (`infra/pulumi/__main__.py:298`)
-- Person research summarises videos into its own `yt2txt-people-videos` rows and never touches the summaries table, so those videos get no history row and no `speakers[]` tags, and a video already summarised is paid for twice — merge the two analyses onto one summary per video so people tags persist across both (`backend/summarise/people.js:269`, `backend/summarise/handler.js:162`)
-- Gemma can never be reached as a fallback — `buildModelChain` caps chains at 4 and the allowed list is Gemini-first, so Gemma only runs when hand-picked — yet its missing `responseSchema` support is what forces the speaker-trailer parse/strip/re-extract machinery; go Gemini-only and replace the trailer contract with structured output `{ title, markdown, speakers[] }`, deleting `speakers.js`, `extractTitle` and the trailer rule (loses only the manual free-tier quota escape hatch; supersedes the 2026-07-29 DECISIONS entry) (`backend/summarise/people-pure.js:47`, `backend/summarise/handler.js:157`)
 
 ## Later
 
+- `callMeta` in `people.js` still extracts its meta-summary JSON with a regex — now that every allowed model is Gemini, it could use `responseSchema` like the summarise path (`backend/summarise/people.js:200`)
 - Suggest one "catch-up" video per tracked person — the single best thing to watch to absorb their current point of view, instead of reading eight summaries
 - People detail polls through two effects sharing one mutable `pollRef`; a single effect keyed on "is the status terminal" would be easier to reason about, and pausing the 3-second poll on a hidden tab is free (`src/pages/People.jsx:35`)
 - The 4,096-byte body check runs on the raw string and never consults `isBase64Encoded` — harmless with a JSON content-type today, latent otherwise (`backend/summarise/handler.js:326`)
@@ -28,3 +27,4 @@ One line per item, each pointing at the code it came from.
 ## Won't do
 
 - Move the person-job continuation loop to Step Functions — it would delete the self-invoke plumbing, continuation budget and stall-detection tick, but it is a genuine rewrite of `people.js`; revisit only if the current machinery starts failing in ways the logs cannot explain
+- Channel-name hints in the text-only speaker extractor, a known-person hint during research, and a backfill re-tagging empty historical `speakers[]` — declined in the merge-spec design review (prompt hints only); the extractor itself was deleted with the trailer contract
