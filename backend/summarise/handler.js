@@ -1,50 +1,23 @@
 import { GoogleGenAI } from "@google/genai";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, PutCommand, QueryCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, QueryCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
 import { researchPerson, getPerson, listPeople } from "./people.js";
-import { getVideoMetadata } from "./youtube.js";
-import { canonicalUrlForId, canonicalYoutubeUrl, isVideoId, videoIdFrom } from "./youtube-url.js";
-import { normaliseSpeakers, parseSpeakerTrailer, stripSpeakerTrailer } from "./tags.js";
-import { extractSpeakersFromMarkdown } from "./speakers.js";
+import { canonicalUrlForId, canonicalYoutubeUrl, isVideoId } from "./youtube-url.js";
 import {
-  DEFAULT_MODEL, DEFAULT_FPS, MEDIA_RESOLUTION_LOW, fpsForDuration,
-  SUMMARY_INDEX, SUMMARY_INDEX_PK, SUMMARY_INDEX_PK_VALUE,
+  DEFAULT_MODEL, SUMMARY_INDEX, SUMMARY_INDEX_PK, SUMMARY_INDEX_PK_VALUE,
 } from "./constants.js";
 import { buildModelChain } from "./people-pure.js";
 import { getAllowedModels } from "./models.js";
-import { generateWithFallback } from "./gemini.js";
+import { generateSummaryItem, putFreshSummary } from "./summarise-core.js";
 
 // The HTTP request core — every `GET`/`POST` the Function URL serves. Not a
 // Lambda entry point itself: `web.js` is, and it imports handleHttpRequest()
 // below. The internally-invoked jobs live on the worker function (worker.js)
 // and are unreachable from here.
 
-const SYSTEM_PROMPT = `Role: You are a no-nonsense Content Analyst. Your goal is to give me the "meat" of the video in plain English. Cut all fluff, repetitive points, and AI-sounding filler.
-
-Task: Analyze the YouTube video at the provided URL. Use the YouTube tool to get the transcript.
-Instructions:
-1. Title: Give me a simple, clear title that explains exactly what the video is about. No buzzwords. Use Markdown Heading format '# Title'
-2. The Bottom Line (Synthesis): In 100 words or less, explain the main point and why it matters. Use simple language.
-3. 3 Quick "Aha!" Moments: Give me 3 bullet points. Each must be under 15 words. Focus on the most useful or surprising things said. Put these below "The Bottom Line."
-4. The Metrics (Numbers Only):
-  Signal-to-Noise: (x/5)
-  Clickbait Factor: (x/5)
-5. Key Insights: Use headers for main topics.
-6. Speakers: The very last line of your reply, after everything else, must name every person who actually speaks in the video — the host and any guests — in exactly this form:
-Speakers: Jane Doe, John Smith
-  Real names only. Skip anyone who is merely mentioned but never speaks, and skip generic labels like "host" or "narrator". If you cannot name anyone, write exactly "Speakers: none". This line is metadata, not part of the summary.
- Constraint: Skip the ads and random filler conversation.
- Output: Distill the insights and a timestamp link like this: [HH:MM:SS](https://youtu.be/VIDEO_ID?t=SECONDS).
- Use exactly the Video ID provided below in timestamp links. Do not infer it from the content.
-Tone: Clear, direct, and brief. Use plain Markdown. No fancy jargon.`;
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TABLE = process.env.DYNAMODB_TABLE;
 const SHARED_SECRET = process.env.SHARED_SECRET || "";
-
-function extractTitle(markdown) {
-  const match = markdown.match(/^#{1,2}\s+(.+)/m);
-  return match ? match[1].trim() : "Untitled";
-}
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
 
@@ -60,30 +33,6 @@ function headerValue(event, name) {
     if (k.toLowerCase() === lower) return headers[k];
   }
   return undefined;
-}
-
-const NO_VIDEO_META = { fps: DEFAULT_FPS, videoTitle: null, channelTitle: null, channelId: null };
-
-// Frame sample rate plus the video's own title and channel, from one YouTube
-// API call. Best-effort: the YouTube API is not required for summarising, so
-// any failure (including a missing YOUTUBE_API_KEY) falls back to DEFAULT_FPS
-// and no channel metadata rather than erroring.
-async function lookupVideoMeta(videoId) {
-  if (!videoId) return NO_VIDEO_META;
-  try {
-    const meta = await getVideoMetadata([videoId]);
-    const info = meta?.[videoId];
-    if (!info) return NO_VIDEO_META;
-    return {
-      fps: fpsForDuration(info.durationSeconds),
-      videoTitle: info.title || null,
-      channelTitle: info.channelTitle || null,
-      channelId: info.channelId || null,
-    };
-  } catch (err) {
-    console.warn(`metadata lookup failed for ${videoId}, using defaults`, err?.message || err);
-    return NO_VIDEO_META;
-  }
 }
 
 // Shape of a summary in every response body. Rows written before speaker tags
@@ -117,30 +66,16 @@ async function summarise(url, requestedModel = DEFAULT_MODEL) {
   }
 
   const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY, apiVersion: "v1beta" });
-  const videoId = videoIdFrom(url);
-  const promptText = `${SYSTEM_PROMPT}\n\nVideo URL: ${url}\nVideo ID: ${videoId}`;
   const allowedModels = await getAllowedModels();
   const chain = buildModelChain(requestedModel, allowedModels.map((m) => m.value));
-  const { fps, videoTitle, channelTitle, channelId } = await lookupVideoMeta(videoId);
 
   // One try per model, no backoff and no timeout: someone is waiting on this
   // response, so a quota error moves straight to the next model and anything
   // else fails the request outright.
-  const outcome = await generateWithFallback(ai, {
-    chain,
-    contents: [{
-      parts: [
-        { fileData: { fileUri: url }, videoMetadata: { fps } },
-        { text: promptText },
-      ],
-    }],
-    config: { mediaResolution: MEDIA_RESOLUTION_LOW },
+  const outcome = await generateSummaryItem(ai, url, chain, {
     attempts: 1,
     throwOnNonRetryable: true,
-    onResponse: (response, model) =>
-      console.log(`summarise tokens: model=${model} fps=${fps} total=${response.usageMetadata?.totalTokenCount ?? "?"}`),
-    onRetryableError: (err, model) =>
-      console.warn(`model ${model} failed (${err?.status || ""} ${err?.message || ""}), trying next`),
+    logLabel: "summarise",
   });
 
   if (!outcome.ok) {
@@ -151,64 +86,12 @@ async function summarise(url, requestedModel = DEFAULT_MODEL) {
       body: JSON.stringify({ error: "all models are currently rate-limited — try again shortly" }),
     };
   }
-  const markdown = outcome.text;
-  const usedModel = outcome.model;
 
-  // The speaker trailer is metadata, so it is stripped before the summary is
-  // stored. If the model skipped it, re-read the finished summary with a cheap
-  // text-only call; tags are optional, so an empty list is a fine outcome.
-  const trailer = parseSpeakerTrailer(markdown);
-  const cleanMarkdown = stripSpeakerTrailer(markdown);
-  let speakers = normaliseSpeakers(trailer || []);
-  if (speakers.length === 0 && trailer === null) {
-    // null means the extraction call failed; on the request path that is the
-    // same as no tags — the summary still ships.
-    speakers = (await extractSpeakersFromMarkdown(ai, usedModel, cleanMarkdown)) || [];
-  }
-
-  const title = extractTitle(cleanMarkdown);
-  const date = new Date().toISOString().split("T")[0];
-  const createdAt = Date.now();
-  const item = {
-    url,
-    title,
-    markdown: cleanMarkdown,
-    date,
-    createdAt,
-    model: usedModel,
-    videoTitle,
-    channelTitle,
-    channelId,
-    speakers,
-    // Constant partition key of the byCreatedAt index — this is the only place
-    // new rows get it, which is what makes the index a complete feed. It is an
-    // index key, not data: neither summaryPayload() nor listRow() returns it.
-    [SUMMARY_INDEX_PK]: SUMMARY_INDEX_PK_VALUE,
-  };
-
-  try {
-    await ddb.send(new PutCommand({
-      TableName: TABLE,
-      Item: item,
-      ConditionExpression: "attribute_not_exists(#u)",
-      ExpressionAttributeNames: { "#u": "url" },
-    }));
-  } catch (err) {
-    if (err.name !== "ConditionalCheckFailedException") throw err;
-    const again = await ddb.send(new GetCommand({ TableName: TABLE, Key: { url } }));
-    if (again.Item) {
-      return {
-        statusCode: 200,
-        headers: JSON_HEADERS,
-        body: JSON.stringify(summaryPayload(again.Item, url, { cached: true })),
-      };
-    }
-  }
-
+  const { adopted, item } = await putFreshSummary(outcome.item);
   return {
     statusCode: 200,
     headers: JSON_HEADERS,
-    body: JSON.stringify(summaryPayload(item, url)),
+    body: JSON.stringify(summaryPayload(item, url, adopted ? { cached: true } : {})),
   };
 }
 
