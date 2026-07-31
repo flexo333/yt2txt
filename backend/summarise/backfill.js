@@ -1,4 +1,3 @@
-import { GoogleGenAI } from "@google/genai";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import {
   DynamoDBDocumentClient, DeleteCommand, GetCommand, PutCommand, ScanCommand, UpdateCommand,
@@ -6,8 +5,7 @@ import {
 import { getVideoMetadata } from "./youtube.js";
 import { canonicalYoutubeUrl, videoIdFrom } from "./youtube-url.js";
 import { mergeFill, needsCanonicalUrl } from "./backfill-pure.js";
-import { extractSpeakersFromMarkdown } from "./speakers.js";
-import { DEFAULT_MODEL, SUMMARY_INDEX_PK, SUMMARY_INDEX_PK_VALUE } from "./constants.js";
+import { SUMMARY_INDEX_PK, SUMMARY_INDEX_PK_VALUE } from "./constants.js";
 
 // One-shot repair of summaries written before the current write path existed.
 // Invoke the *worker* Lambda directly with { "__backfill": true } — the URL
@@ -19,30 +17,23 @@ import { DEFAULT_MODEL, SUMMARY_INDEX_PK, SUMMARY_INDEX_PK_VALUE } from "./const
 //     --cli-binary-format raw-in-base64-out \
 //     --payload '{"__backfill": true, "dryRun": true}' /dev/stdout
 //
-// Four independent passes per row, each skipped if the row is already right:
+// Three independent passes per row, each skipped if the row is already right:
 //   - canonical key: move rows stored under a non-canonical URL onto the
 //                    canonical `watch?v=<id>` key, folding duplicates together,
 //                    so one video really is one row
 //   - index key:     the byCreatedAt partition key (+ a createdAt for rows old
 //                    enough to predate it), so the row appears in the feed
 //   - channel/title: YouTube API, batched 50 ids per call (1 quota unit each)
-//   - speakers:      the same text-only extraction the request path falls back
-//                    to, run over the summary markdown already in the row
 //
 // Idempotent: a row is "migrated" once it has the attribute (or, for the
 // canonical pass, once it is at the canonical key), so re-running only picks up
-// whatever failed last time. A failed extraction writes nothing, so it is
-// retried on the next run; a successful one that found nobody writes [] and is
-// not revisited.
+// whatever failed last time.
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TABLE = process.env.DYNAMODB_TABLE;
 
 // YouTube's videos.list accepts at most 50 ids per call.
 const ID_BATCH_SIZE = 50;
-
-// Stop and report a resume key rather than being killed mid-write.
-const TIME_RESERVE_MS = 60 * 1000;
 
 const DEFAULT_ROW_LIMIT = 500;
 
@@ -65,10 +56,6 @@ function createdAtFor(row) {
 
 function needsVideoMeta(row) {
   return !row.channelTitle && !row.videoTitle;
-}
-
-function needsSpeakers(row) {
-  return !Array.isArray(row.speakers);
 }
 
 async function scanPage(startKey) {
@@ -252,30 +239,12 @@ async function backfillVideoMeta(rows, { dryRun }) {
   return updated;
 }
 
-// Returns true when the row was (or would be) written. A failed extraction
-// returns null from extractSpeakersFromMarkdown and writes nothing, so the row
-// keeps no `speakers` attribute and a later run picks it up again — otherwise a
-// rate-limit storm mid-migration would permanently mark rows as tagless.
-async function backfillSpeakers(ai, model, row) {
-  if (!row.markdown) return false;
-  const speakers = await extractSpeakersFromMarkdown(ai, model, row.markdown);
-  if (speakers === null) return false;
-  await ddb.send(new UpdateCommand({
-    TableName: TABLE,
-    Key: { url: row.url },
-    UpdateExpression: "SET #s = :s",
-    ExpressionAttributeNames: { "#s": "speakers" },
-    ExpressionAttributeValues: { ":s": speakers },
-  }));
-  return true;
-}
-
-export async function runBackfill(event = {}, context) {
+// `context` is unused now that the speakers pass (the only time-metered one)
+// is gone, but the signature stays two-arity — worker.js's handler calls
+// runBackfill(event, context) unconditionally, same as the other job kinds.
+export async function runBackfill(event = {}, _context) {
   const dryRun = !!event.dryRun;
   const rowLimit = Number(event.limit) > 0 ? Number(event.limit) : DEFAULT_ROW_LIMIT;
-  const model = event.model || DEFAULT_MODEL;
-  const remaining = () => (context?.getRemainingTimeInMillis?.() ?? Number.MAX_SAFE_INTEGER);
-  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY, apiVersion: "v1beta" });
 
   // urlDeleted should equal urlMigrated + urlMerged on a clean run; a gap means
   // rows were folded but not removed. nonCanonicalRemaining is the number this
@@ -284,13 +253,12 @@ export async function runBackfill(event = {}, context) {
   const result = {
     scanned: 0,
     urlMigrated: 0, urlMerged: 0, urlDeleted: 0, nonCanonicalRemaining: 0,
-    indexUpdated: 0, metaUpdated: 0, speakersUpdated: 0,
+    indexUpdated: 0, metaUpdated: 0,
     dryRun, done: true,
   };
   let startKey = event.startKey;
 
   do {
-    const pageStartKey = startKey;
     const page = await scanPage(startKey);
     const rows = page.Items || [];
     result.scanned += rows.length;
@@ -306,27 +274,6 @@ export async function runBackfill(event = {}, context) {
     result.indexUpdated += await backfillIndexKeys(live.filter(needsIndexKey), { dryRun });
 
     result.metaUpdated += await backfillVideoMeta(live.filter(needsVideoMeta), { dryRun });
-
-    const speakerRows = live.filter(needsSpeakers);
-    if (dryRun) {
-      // A dry run only counts. Calling Gemini per row would spend real tokens
-      // for a rehearsal, and since it writes nothing there is no attribute to
-      // make a resumed run skip rows it already visited — it would replay the
-      // same page forever.
-      result.speakersUpdated += speakerRows.filter((row) => row.markdown).length;
-    } else {
-      for (const row of speakerRows) {
-        if (remaining() < TIME_RESERVE_MS) {
-          // Resume from this page, not the next one — its remaining rows are
-          // still untouched. Rows already written this run are skipped on the
-          // rescan because they now have the attribute.
-          result.done = false;
-          result.nextStartKey = pageStartKey || null;
-          return result;
-        }
-        if (await backfillSpeakers(ai, model, row)) result.speakersUpdated++;
-      }
-    }
 
     startKey = page.LastEvaluatedKey;
     if (startKey && result.scanned >= rowLimit) {

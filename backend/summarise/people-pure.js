@@ -85,7 +85,7 @@ export function sleep(ms) {
 
 // Reject if `promise` does not settle in time. The default message says "timed
 // out", which isRetryableModelError treats as retryable — a hung model call is
-// worth another attempt. Callers outside that loop (speakers.js) pass their own.
+// worth another attempt. Callers outside that loop can pass their own.
 export function withTimeout(promise, ms, message = `generateContent timed out after ${ms}ms`) {
   let timer;
   const timeout = new Promise((_, reject) => {

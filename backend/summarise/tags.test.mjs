@@ -4,44 +4,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  parseSpeakerTrailer,
-  stripSpeakerTrailer,
   parseSpeakerList,
   normaliseSpeakers,
   MAX_SPEAKERS,
 } from "./tags.js";
-
-test("parseSpeakerTrailer reads the plain trailer line", () => {
-  const md = "# Title\n\nSome body text.\n\nSpeakers: Jane Doe, John Smith";
-  assert.equal(parseSpeakerTrailer(md), "Jane Doe, John Smith");
-});
-
-test("parseSpeakerTrailer tolerates bold and HTML-comment forms", () => {
-  assert.equal(parseSpeakerTrailer("body\n**Speakers:** Jane Doe"), "Jane Doe");
-  assert.equal(parseSpeakerTrailer("body\n<!-- speakers: Jane Doe -->"), "Jane Doe");
-  assert.equal(parseSpeakerTrailer("body\nSPEAKER: Jane Doe"), "Jane Doe");
-});
-
-test("parseSpeakerTrailer ignores a Speakers heading buried in the body", () => {
-  const md = "Speakers: Jane Doe\n\n" + Array.from({ length: 10 }, (_, i) => `line ${i}`).join("\n");
-  assert.equal(parseSpeakerTrailer(md), null);
-});
-
-test("parseSpeakerTrailer returns null when absent or empty", () => {
-  assert.equal(parseSpeakerTrailer("# Title\n\nNo trailer here."), null);
-  assert.equal(parseSpeakerTrailer(""), null);
-  assert.equal(parseSpeakerTrailer(undefined), null);
-});
-
-test("stripSpeakerTrailer removes only the trailer line", () => {
-  const md = "# Title\n\nBody text.\n\nSpeakers: Jane Doe";
-  assert.equal(stripSpeakerTrailer(md), "# Title\n\nBody text.");
-});
-
-test("stripSpeakerTrailer leaves untrailered markdown intact", () => {
-  assert.equal(stripSpeakerTrailer("# Title\n\nBody."), "# Title\n\nBody.");
-  assert.equal(stripSpeakerTrailer(""), "");
-});
 
 test("parseSpeakerList splits on commas, semicolons, slashes and 'and'", () => {
   assert.deepEqual(parseSpeakerList("Jane Doe, John Smith; Ada Lovelace and Alan Turing"),
