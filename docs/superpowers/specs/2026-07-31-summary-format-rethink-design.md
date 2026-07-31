@@ -50,7 +50,8 @@ Output (plain Markdown, in exactly this order):
    speaker with 2–4 bullets of their distinctive viewpoints (≤25 words each)
    and up to 2 short verbatim-ish quotes with timestamp links. Use exactly
    the same names here as in the Speakers line. If only one person speaks,
-   omit this section entirely.
+   emit instead '## Notable quotes': up to 3 short verbatim-ish quotes with
+   timestamp links, no per-speaker subsections.
 6. Speakers: The very last line of your reply, after everything else, must
    name every person who actually speaks in the video — the host and any
    guests — in exactly this form:
@@ -85,7 +86,7 @@ Deploying the new prompt before the companion spec's shared-core work is harmles
 ## Edge cases
 
 - **Fallback models (Gemma) drift on the numbered ledger**: acceptable — nothing parses `## Claims`, and the existing best-effort layers (`speakers.js` fallback, whole-summary slice fallback) already cover a flubbed structure.
-- **Solo videos**: attribution inside Claims and the per-speaker section both switch off by prompt rule; the summary is the person's views by construction (the companion spec's fallback relies on this).
+- **Solo videos**: attribution inside Claims switches off, and the per-speaker section is replaced by `## Notable quotes` (a follow-up interview decision on the companion spec — the claim ledger does not guarantee verbatim quotes); the summary is the person's views by construction, and the companion spec's whole-summary fallback carries the quotes along.
 - **Very long dense videos**: output grows by design; output tokens are minor next to video-ingestion tokens, and `mediaResolution`/fps throttling is untouched.
 
 ## Testing
