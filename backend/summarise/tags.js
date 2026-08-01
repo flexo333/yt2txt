@@ -1,4 +1,5 @@
-// Pure helpers for the speaker tags attached to a summary. Dependency-free and
+// Pure helpers that clean the speaker-name arrays arriving via structured
+// output (the trailer contract died 2026-07-31). Dependency-free and
 // import-free so `node tags.test.mjs` runs without node_modules, same as
 // people-pure.js and src/share.js.
 
@@ -9,14 +10,6 @@ export const MAX_SPEAKERS = 8;
 const MIN_NAME_LENGTH = 2;
 const MAX_NAME_LENGTH = 60;
 const MAX_NAME_WORDS = 6;
-
-// How far back from the end of a summary to look for the trailer line.
-const TRAILER_SEARCH_LINES = 5;
-
-// The prompt asks for a bare `Speakers: a, b` final line. The bold and
-// HTML-comment forms are accepted too because models decide on their own that
-// metadata "should" be emphasised or hidden.
-const TRAILER_RE = /^\s*(?:<!--\s*)?\**\s*speakers?\s*\**\s*:\s*\**\s*(.+?)\s*(?:-->)?\s*$/i;
 
 const HONORIFIC_RE = /^(?:dr|mr|mrs|ms|miss|prof|professor|sir|dame|rev|fr|sen|senator|rep|gov|pres|gen|capt|lt|col|sgt)\.?\s+/i;
 
@@ -31,35 +24,6 @@ const JUNK = new Set([
   "voice over", "presenter", "moderator", "interviewer", "interviewee",
   "audience", "caller", "callers", "ai voice", "text to speech", "n a",
 ]);
-
-function findTrailer(markdown) {
-  const lines = String(markdown || "").split("\n");
-  let checked = 0;
-  for (let i = lines.length - 1; i >= 0 && checked < TRAILER_SEARCH_LINES; i--) {
-    if (!lines[i].trim()) continue;
-    checked++;
-    const match = lines[i].match(TRAILER_RE);
-    if (match) return { index: i, list: match[1] };
-  }
-  return null;
-}
-
-// The raw, uncleaned speaker list from a summary's trailer line, or null.
-export function parseSpeakerTrailer(markdown) {
-  const found = findTrailer(markdown);
-  return found ? found.list : null;
-}
-
-// The summary with its trailer line removed — the trailer is metadata, so it
-// is stripped before the markdown is stored and rendered.
-export function stripSpeakerTrailer(markdown) {
-  const text = String(markdown || "");
-  const found = findTrailer(text);
-  if (!found) return text.trimEnd();
-  const lines = text.split("\n");
-  lines.splice(found.index, 1);
-  return lines.join("\n").trimEnd();
-}
 
 // Split one written-out list into candidate names. URLs are dropped whole
 // first — the slash separator would otherwise shred one into fake names.

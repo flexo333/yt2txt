@@ -3,6 +3,8 @@
 // @google/genai imports, so this module can be imported and smoke-tested under
 // local `node` (see people-pure.test.mjs) — keep it that way.
 
+import { PROMPT_VERSION } from "./constants.js";
+
 // ── Timing / sizing constants ────────────────────────────────────────────────
 export const MAX_VIDEOS = 8;                  // videos summarised per run
 export const VIDEO_CALL_TIMEOUT_MS = 180_000; // per-video generateContent ceiling
@@ -10,14 +12,31 @@ export const VIDEO_TIME_RESERVE_MS = 210_000; // min Lambda time left to start a
 export const META_TIME_RESERVE_MS = 120_000;  // min Lambda time left to start meta
 export const MAX_CONTINUATIONS = 12;          // self-invoke loop guard
 export const STALL_THRESHOLD_MS = 600_000;    // job considered stalled after this idle
-export const MAX_RETRIES_PER_MODEL = 3;       // per-model attempts in summariseVideo
+// Worst case: a persistently unparseable payload can cost up to
+// MAX_MODEL_ATTEMPTS × MAX_RETRIES_PER_MODEL video watches on the worker path.
+export const MAX_RETRIES_PER_MODEL = 3;       // per-model attempts for a person-job video summary
 export const MAX_MODEL_ATTEMPTS = 4;          // models tried per generateContent
 
 // ── Job-state predicates ─────────────────────────────────────────────────────
 
-// Video rows still needing a summary.
-export function pickPendingVideos(videoRows) {
-  return (videoRows || []).filter((v) => v && v.status === "pending");
+// Video rows a person job still has to process: pending ones, plus done rows
+// whose video has no summaries-table row at all (researched under the
+// pre-merge pipeline, which never wrote one — they self-heal here). The
+// runner looks up which done rows lack a summary and passes the ids in, so
+// this stays pure. A stale-but-present summary is NOT in this set: it
+// upgrades only when its video is being processed anyway.
+export function pickVideosToProcess(videoRows, missingSummaryIds) {
+  const missing = new Set(missingSummaryIds || []);
+  return (videoRows || []).filter(
+    (v) => v && (v.status === "pending" || (v.status === "done" && missing.has(v.videoId))),
+  );
+}
+
+// A summaries row written by an older SYSTEM_PROMPT revision (or before
+// promptVersion existed). Only person jobs act on staleness — the web
+// cache-hit path serves stale rows as-is, because someone is waiting.
+export function isStaleSummary(row) {
+  return !row || !(row.promptVersion >= PROMPT_VERSION);
 }
 
 // True when there is enough Lambda time left to start another video summary.
@@ -64,7 +83,12 @@ export function isRetryableModelError(err) {
     || msg.includes("overloaded")
     || msg.includes("high demand")
     || msg.includes("timed out")
-    || msg.includes("timeout");
+    || msg.includes("timeout")
+    // gemini.js throws this when requireText finds nothing usable — including a
+    // structured-output payload that failed to parse. A model that returned
+    // junk once may return valid JSON on the next attempt, and on the request
+    // path (throwOnNonRetryable) this must advance the chain, not 500.
+    || msg.includes("empty response");
 }
 
 // Exponential backoff (ms) for retry attempt N (0-based), before jitter.
@@ -80,7 +104,7 @@ export function sleep(ms) {
 
 // Reject if `promise` does not settle in time. The default message says "timed
 // out", which isRetryableModelError treats as retryable — a hung model call is
-// worth another attempt. Callers outside that loop (speakers.js) pass their own.
+// worth another attempt. Callers outside that loop can pass their own.
 export function withTimeout(promise, ms, message = `generateContent timed out after ${ms}ms`) {
   let timer;
   const timeout = new Promise((_, reject) => {

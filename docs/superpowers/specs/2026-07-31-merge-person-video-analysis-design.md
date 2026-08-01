@@ -1,6 +1,7 @@
 # Merge person research onto one summary per video — design
 
-**Date:** 2026-07-31 (revised same day after a follow-up decision interview)
+**Date:** 2026-07-31 (revised same day after a follow-up decision interview; amended same day by the structured-output spec)
+**Companion specs:** `2026-07-31-summary-format-rethink-design.md` (owns the prompt text), `2026-07-31-gemini-only-structured-output-design.md` (replaces the Speakers-trailer contract this spec originally preserved with structured output `{ title, markdown, speakers[] }` — the shared core below is described post-amendment).
 **Backlog item:** "Person research summarises videos into its own `yt2txt-people-videos` rows and never touches the summaries table, so those videos get no history row and no `speakers[]` tags, and a video already summarised is paid for twice" (`backend/summarise/people.js`, `backend/summarise/handler.js`).
 
 ## Problem
@@ -18,7 +19,7 @@ Video ingestion is the dominant cost (free-tier TPM throttling is why `mediaReso
 2. **One enriched prompt for all videos, both paths.** Every summary carries per-speaker material, so researching a person whose video is already summarised costs only a text parse — a video is watched at most once per prompt version (modulo the accepted race in decision 8).
 3. **The per-speaker section is visible summary content**, not stripped metadata. No new parse-and-strip contract; the People page slices by heading.
 4. **Stale rows are re-watched once and upgraded** when a person job touches them (detected via `promptVersion`), preserving `createdAt` and `date` — an upgrade is invisible to history. The web cache-hit path never upgrades — someone is waiting, and a stale row is still a fine general summary.
-5. **Speaker-naming fix is prompt hints only**: channel/video title in the video prompt. Declined: hints in the text-only fallback extractor, a known-person hint during research, a backfill for empty historical tags (see Out of scope).
+5. **Speaker-naming fix is prompt hints only**: channel/video title in the video prompt. Declined: hints in the text-only fallback extractor (since made moot — the structured-output spec deletes the extractor entirely), a known-person hint during research, a backfill for empty historical tags (see Out of scope).
 6. **Structure: shared summarise core + cached slices** (approach A). One prompt/call/parse/write pipeline; `yt2txt-people-videos.markdown` holds the person's slice so the UI and meta-synthesis are unchanged.
 7. **`PROMPT_VERSION` is the revision number of `SYSTEM_PROMPT` itself** — any edit to the prompt bumps it (the rule lives in a comment on the constant). Accepted consequence: each edit makes every row stale, and person jobs re-watch the stale rows they touch.
 8. **Races cost duplicate watches, accepted.** The write guards pick a winner's row, but both racers pay for a watch; no claim/lock machinery.
@@ -31,7 +32,7 @@ Video ingestion is the dominant cost (free-tier TPM throttling is why `mediaReso
 
 `SYSTEM_PROMPT` moves to the shared core. Its full text — including the `## What each speaker argues` section this spec's slicer depends on — is defined in `2026-07-31-summary-format-rethink-design.md`, which supersedes the insertion originally described here (the format was redesigned around a replace-watching claim ledger in the same review cycle; the per-speaker section, its heading, its ≤25-word bullets, and its name-consistency rule are unchanged). One amendment from the follow-up interview is folded into that prompt text: when only one person speaks, the model emits `## Notable quotes` — up to 3 short verbatim-ish quotes with timestamp links, no per-speaker subsections — instead of omitting the section (the claim ledger covers a solo speaker's arguments but does not guarantee verbatim quotes).
 
-The Speakers trailer keeps its slot as the final line, still parsed and stripped into `speakers[]` by `tags.js`.
+Speaker names no longer ride a trailer line: they arrive as the `speakers` field of the structured-output envelope (see the structured-output spec), normalised by `tags.js` into `speakers[]` as before.
 
 The per-request text gains a hint block, included only when the YouTube metadata lookup succeeded:
 
@@ -43,7 +44,7 @@ Cost: video ingestion unchanged; output growth under the new format is covered b
 
 ### 2. Shared core — `backend/summarise/summarise-core.js`
 
-The middle of `handler.js`'s `summarise()` — build contents (fps ladder, hints), `generateWithFallback`, trailer parse/strip, speakers text-only fallback (`speakers.js`, unchanged), title extraction, item build — moves to a module both entry points call with their own patience:
+The middle of `handler.js`'s `summarise()` — metadata lookup, build contents (fps ladder, hints), `generateWithFallback` with the response schema, `parseSummaryResponse` (`summary-schema.js` — replaces the trailer parse/strip, the `speakers.js` fallback, and `extractTitle`, all deleted by the structured-output spec), item build — moves to a module both entry points call with their own patience:
 
 - **Web POST** (`handler.js`): 1 attempt per model, no timeout, `throwOnNonRetryable` — as today. Keeps its dedupe `GetItem` → conditional `Put` → race re-read around the core call.
 - **Person job** (`people.js`): `MAX_RETRIES_PER_MODEL`, backoff, `VIDEO_CALL_TIMEOUT_MS` — as today.
@@ -89,7 +90,7 @@ One change: each video card on the People page gains a separate "Full summary �
 
 - Search false positive (video *about* the person who never speaks): slice misses → whole-summary fallback; the meta-prompt sentence prevents mis-attribution.
 - Two person jobs racing the same video: on a fresh one the conditional put picks a winner and the loser adopts its row; on a stale one, last write wins (both rows are equally current). Either way both racers pay for a watch — accepted, no claim/lock (requires two people researched simultaneously who share a video).
-- Model omits the section on a multi-speaker video (Gemma is the usual suspect): whole-summary fallback, no retry.
+- Model omits the section on a multi-speaker video: whole-summary fallback, no retry. (The `responseSchema` enforces only the JSON envelope, not the markdown's internal headings.)
 - A person job dumping up to 8 new rows into the history feed at once: intended behaviour.
 
 ## Testing
@@ -100,7 +101,7 @@ One change: each video card on the People page gains a separate "Full summary �
 
 ## Out of scope (declined in design review)
 
-- Channel-name hints in the text-only fallback extractor (`speakers.js`).
+- Channel-name hints in the text-only fallback extractor (`speakers.js`) — moot since the structured-output spec deletes the extractor.
 - A known-person hint when a research job summarises a video.
 - A backfill pass re-tagging historical rows with empty `speakers[]`.
 

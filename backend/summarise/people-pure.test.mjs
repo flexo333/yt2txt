@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  pickPendingVideos,
+  pickVideosToProcess,
+  isStaleSummary,
   canStartVideo,
   canStartMeta,
   isStalled,
@@ -14,16 +15,30 @@ import {
   STALL_THRESHOLD_MS,
   MAX_MODEL_ATTEMPTS,
 } from "./people-pure.js";
+import { PROMPT_VERSION } from "./constants.js";
 
-test("pickPendingVideos keeps only pending rows", () => {
+test("pickVideosToProcess: pending rows plus done rows missing a summary", () => {
   const rows = [
     { videoId: "a", status: "pending" },
     { videoId: "b", status: "done" },
-    { videoId: "c", status: "error" },
-    { videoId: "d", status: "pending" },
+    { videoId: "c", status: "done" },
+    { videoId: "d", status: "error" },
+    null,
   ];
-  assert.deepEqual(pickPendingVideos(rows).map((v) => v.videoId), ["a", "d"]);
-  assert.deepEqual(pickPendingVideos(null), []);
+  assert.deepEqual(
+    pickVideosToProcess(rows, ["c", "zzz"]).map((v) => v.videoId),
+    ["a", "c"],
+  );
+  assert.deepEqual(pickVideosToProcess(rows, []).map((v) => v.videoId), ["a"]);
+  assert.deepEqual(pickVideosToProcess(null, null), []);
+});
+
+test("isStaleSummary: absent or older promptVersion is stale", () => {
+  assert.equal(isStaleSummary(null), true);
+  assert.equal(isStaleSummary({}), true);
+  assert.equal(isStaleSummary({ promptVersion: 1 }), true);
+  assert.equal(isStaleSummary({ promptVersion: PROMPT_VERSION }), false);
+  assert.equal(isStaleSummary({ promptVersion: PROMPT_VERSION + 1 }), false);
 });
 
 test("canStartVideo / canStartMeta respect their reserves", () => {
@@ -56,6 +71,7 @@ test("isRetryableModelError classifies quota / 5xx / timeout as retryable", () =
   assert.equal(isRetryableModelError({ status: 503 }), true);
   assert.equal(isRetryableModelError({ message: "RESOURCE_EXHAUSTED" }), true);
   assert.equal(isRetryableModelError({ message: "request timed out" }), true);
+  assert.equal(isRetryableModelError(new Error("empty response")), true);
   assert.equal(isRetryableModelError({ status: 400, message: "FAILED_PRECONDITION" }), false);
   assert.equal(isRetryableModelError({ status: 404 }), false);
 });

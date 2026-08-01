@@ -1,5 +1,5 @@
 // The model used when a request does not specify one. Must appear in
-// handler.js's FALLBACK_MODELS and pass its isWantedModel() filter.
+// models.js's FALLBACK_MODELS and pass its isWantedModel() filter.
 export const DEFAULT_MODEL = "models/gemini-flash-latest";
 
 // Gemini bills video at 258 frame tokens per sampled frame (66 at low media
@@ -13,6 +13,13 @@ export const MEDIA_RESOLUTION_LOW = "MEDIA_RESOLUTION_LOW";
 // fps used when a video's duration is unknown (a YouTube API failure, or no
 // YOUTUBE_API_KEY) — the middle of the ladder, safe for a typical-length video.
 export const DEFAULT_FPS = 0.2;
+
+// The revision number of SYSTEM_PROMPT (summarise-core.js) — any edit to the
+// prompt text bumps it. Summary rows are stamped with it; a row whose
+// promptVersion is absent or lower is "stale". Only person jobs act on
+// staleness (re-watch and upgrade rows they touch anyway) — the web cache-hit
+// path serves stale rows as-is, because someone is waiting.
+export const PROMPT_VERSION = 2;
 
 // ── yt2txt-summaries recency index ───────────────────────────────────────────
 // The summaries table is keyed by `url`, which says nothing about recency, so
