@@ -61,14 +61,15 @@ export async function getSummary(id) {
 }
 
 // POST / → summarise a video and persist it. The Lambda dedupes on url, so an
-// already-summarised video comes back from cache. Throws the response body on
-// any non-2xx. Returns the history-item shape the UI stores (the Lambda calls
-// the summary body `markdown`).
-export async function createSummary(url, model) {
+// already-summarised video comes back from cache — unless `regenerate` is set,
+// which makes the Lambda re-watch the video and overwrite the stored row.
+// Throws the response body on any non-2xx. Returns the history-item shape the
+// UI stores (the Lambda calls the summary body `markdown`).
+export async function createSummary(url, model, { regenerate = false } = {}) {
   const res = await fetch(LAMBDA_URL, {
     method: 'POST',
     headers: jsonHeaders(),
-    body: JSON.stringify({ url, model }),
+    body: JSON.stringify(regenerate ? { url, model, regenerate: true } : { url, model }),
   });
   if (!res.ok) throw new Error(await res.text());
   const {

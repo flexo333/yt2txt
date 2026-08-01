@@ -20,10 +20,13 @@ const downloadMarkdown = (text) => {
 // full row — which is the case straight after generating one — the summary is
 // fetched from GET ?video=<id>. A snippet we do have renders immediately
 // underneath that request, so the page is never blank when it could be useful.
-const Summary = ({ id, item, historyLoaded, modelLabel, speakerFilter, onSpeakerSelect }) => {
+const Summary = ({ id, item, historyLoaded, modelLabel, speakerFilter, onSpeakerSelect, onRegenerate }) => {
   // { id, row } — row is null when the fetch found nothing. Keyed by id so a
   // route change can never render the previous video's summary.
   const [fetched, setFetched] = useState(null);
+  // { id, status: 'working' | 'error' } — keyed by id like `fetched`, so
+  // navigating to another summary mid-regeneration carries nothing over.
+  const [regen, setRegen] = useState(null);
 
   const needsFull = Boolean(hasBackend && id && !(item && !item.truncated));
 
@@ -54,6 +57,25 @@ const Summary = ({ id, item, historyLoaded, modelLabel, speakerFilter, onSpeaker
   // running, or it failed / hit an older Lambda without the endpoint.
   const partial = Boolean(shown.truncated);
 
+  const regenerating = Boolean(regen && regen.id === id && regen.status === 'working');
+  const regenFailed = Boolean(regen && regen.id === id && regen.status === 'error');
+
+  // Re-watch the video and replace the stored summary. On success the fresh
+  // row goes into `fetched` — the history row App holds is updated too, but
+  // `shown` prefers the fetched row, so it must be replaced here to render.
+  // On failure nothing changes server-side; the old summary stays on screen.
+  const regenerate = async () => {
+    setRegen({ id, status: 'working' });
+    try {
+      const row = await onRegenerate(shown.url);
+      setFetched({ id, row });
+      setRegen(null);
+    } catch (error) {
+      console.error(error);
+      setRegen({ id, status: 'error' });
+    }
+  };
+
   return (
     <>
       <div className="article-actions">
@@ -70,7 +92,22 @@ const Summary = ({ id, item, historyLoaded, modelLabel, speakerFilter, onSpeaker
         >
           Download .md
         </button>
+        {hasBackend && shown.url && (
+          <button
+            className="btn btn--secondary"
+            onClick={regenerate}
+            disabled={regenerating}
+            title="Re-watch the video and replace this summary"
+          >
+            {regenerating ? 'Regenerating…' : 'Regenerate'}
+          </button>
+        )}
       </div>
+      {regenFailed && (
+        <p className="error">
+          Could not regenerate — the previous summary is unchanged.
+        </p>
+      )}
       {(shown.channelTitle || shown.model) && (
         <div className="summary-meta">
           {shown.channelTitle && (
