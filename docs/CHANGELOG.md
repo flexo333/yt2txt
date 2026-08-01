@@ -9,6 +9,7 @@ history on 2026-07-30, when this file was created.
 
 ## Unreleased
 
+- A summary page now has a Regenerate button: when a summary came out thin, wrong or stale, one click re-watches the video and replaces the stored summary in place. The old text stays until the new one succeeds, and the entry keeps its position in History.
 - The summarise endpoint's public-access policy now carries both permissions AWS has required since October 2025. Nothing changes in normal use; it removes a trap where recreating the endpoint would have made every request fail with a 403 for no visible reason.
 - Summaries now replace watching instead of triaging: a numbered claim ledger with reasoning, numbers and timestamps, per-speaker sections (or notable quotes for solo videos), and no more Signal-to-Noise/Clickbait scores.
 - Person research and regular summaries now share one summary per video: researched videos appear in History with speaker tags, already-summarised videos are reused instead of paid for twice, and People video cards link to the full summary.

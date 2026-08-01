@@ -8,7 +8,7 @@ import {
 } from "./constants.js";
 import { buildModelChain } from "./people-pure.js";
 import { getAllowedModels } from "./models.js";
-import { generateSummaryItem, putFreshSummary } from "./summarise-core.js";
+import { generateSummaryItem, putFreshSummary, putUpgradedSummary } from "./summarise-core.js";
 
 // The HTTP request core — every `GET`/`POST` the Function URL serves. Not a
 // Lambda entry point itself: `web.js` is, and it imports handleHttpRequest()
@@ -54,10 +54,11 @@ function summaryPayload(item, url, extra = {}) {
 
 // `url` is always canonical here — the POST handler rewrites it before calling,
 // so the dedupe GetItem, the item build and the race re-read below all address
-// the one row this video can have.
-async function summarise(url, requestedModel = DEFAULT_MODEL) {
+// the one row this video can have. `regenerate` skips the cached return and
+// overwrites the row instead — the user's way out of a bad or stale summary.
+async function summarise(url, requestedModel = DEFAULT_MODEL, { regenerate = false } = {}) {
   const existing = await ddb.send(new GetCommand({ TableName: TABLE, Key: { url } }));
-  if (existing.Item) {
+  if (existing.Item && !regenerate) {
     return {
       statusCode: 200,
       headers: JSON_HEADERS,
@@ -84,6 +85,20 @@ async function summarise(url, requestedModel = DEFAULT_MODEL) {
       statusCode: 503,
       headers: JSON_HEADERS,
       body: JSON.stringify({ error: "all models are currently rate-limited — try again shortly" }),
+    };
+  }
+
+  // A regeneration of an existing row is an upgrade write: unconditional, but
+  // keeping the old createdAt/date so the row holds its place in history, and
+  // keeping known-good metadata if the fresh lookup failed. The old summary is
+  // only ever replaced by a successful generation — the failure path above
+  // never touched it.
+  if (existing.Item) {
+    const item = await putUpgradedSummary(outcome.item, existing.Item);
+    return {
+      statusCode: 200,
+      headers: JSON_HEADERS,
+      body: JSON.stringify(summaryPayload(item, url)),
     };
   }
 
@@ -247,7 +262,7 @@ export async function handleHttpRequest(event) {
           body: JSON.stringify({ error: "model not supported" }),
         };
       }
-      return await summarise(url, model);
+      return await summarise(url, model, { regenerate: !!body.regenerate });
     }
 
     if (method === "GET") {

@@ -7,6 +7,13 @@ in under ten lines. If a choice is obvious from reading the code, it does not be
 The five entries below were reconstructed on 2026-07-30 from the code and from CLAUDE.md,
 and dated to the commit that shipped each choice rather than to the day it was argued.
 
+## 2026-08-01 — Regenerate is a flag on POST, written as an upgrade
+
+**Context:** A stored summary is occasionally bad or stale, and the URL-keyed dedupe means re-submitting the video returns the cached row forever.
+**Options:** A `regenerate: true` flag on the existing `POST { url, model }`; a new dispatch action; delete the row then re-POST.
+**Choice:** The flag. It reuses canonicalisation, model validation and the model chain, and writes through the pre-existing `putUpgradedSummary()` — so a regenerated row keeps its `createdAt`/`date` (history order undisturbed) and keeps known-good metadata when the fresh lookup fails. Delete-then-POST would have needed `DeleteItem` on the web role and left a window with no row.
+**Consequences:** The old summary is only ever replaced by a successful generation — a failed retry costs nothing. Regeneration uses the app's currently selected model, not the row's stored one; the frontend replaces the history row in place instead of moving it to the top.
+
 ## 2026-07-31 — Gemini-only, structured output instead of the speaker trailer
 
 **Context:** The trailer contract existed solely because the model chain could in theory fall back to Gemma, which lacks `responseSchema` — but five Gemini models fill the 4-slot chain, so Gemma was unreachable except hand-picked.

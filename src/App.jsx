@@ -100,6 +100,17 @@ const BrightBlogApp = () => {
     return item;
   };
 
+  // Regenerate an existing summary: the Lambda re-watches the video and
+  // overwrites the row, preserving its createdAt — so the history row is
+  // replaced in place rather than moved to the top like a fresh generation.
+  const regenerateSummary = async (targetUrl) => {
+    const item = await createSummary(targetUrl, model, { regenerate: true });
+    setHistory(prev => prev.map(h => (
+      h.url === targetUrl ? { ...h, ...item, truncated: false } : h
+    )));
+    return item;
+  };
+
   const generatePost = async () => {
     if (!url) return;
     // Convenience only — the Lambda canonicalises with this very function
@@ -188,6 +199,7 @@ const BrightBlogApp = () => {
       modelLabel={modelLabel}
       speakerFilter={speakerFilter}
       onSpeakerSelect={filterBySpeaker}
+      onRegenerate={regenerateSummary}
     />
   ) : page === 'share' ? (
     <Share
