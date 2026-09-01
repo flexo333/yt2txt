@@ -11,7 +11,7 @@ and dated to the commit that shipped each choice rather than to the day it was a
 
 **Context:** Timestamp links (`[HH:MM:SS](…?t=SECONDS)`) previously opened YouTube in a new tab, leaving the summary.
 **Options:** Load YouTube's IFrame Player API script (adds a third-party script + async ready callback); postMessage directly to an `enablejsapi=1` `youtube-nocookie.com` iframe (no extra dependency, hand-roll the `listening`/`onReady`/`seekTo` handshake); no embed at all.
-**Choice:** Facade-first embed + bare postMessage. First click mounts the iframe with `start=` baked in (no round-trip); later timestamp clicks need the `onReady` handshake first, so seeks before that are queued.
+**Choice:** Facade-first embed (thumbnail only until clicked — no player, scripts or cookies; the `i.ytimg.com` request itself stays, sent with `no-referrer`) + bare postMessage. First click mounts the iframe with `start=` baked in (no round-trip); later timestamp clicks need the `onReady` handshake first, so seeks before that are queued.
 **Consequences:** No new dependency, but the handshake is hand-maintained if YouTube changes its message contract. If a video has embedding disabled by the uploader, the iframe shows YouTube's own "watch on YouTube" fallback inside the frame — clicking a timestamp still posts to it (silently a no-op) rather than falling back to opening a new tab; not handled specially here.
 
 ## 2026-08-01 — Regenerate is a flag on POST, written as an upgrade

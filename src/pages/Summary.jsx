@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { navigate, linkClick } from '../useLocation.js';
+import { navigate, linkClick, isPlainClick } from '../useLocation.js';
 import { hasBackend, getSummary } from '../api.js';
 import Markdown from '../components/Markdown.jsx';
 import SpeakerTags from '../components/SpeakerTags.jsx';
@@ -67,10 +67,11 @@ const Summary = ({ id, item, historyLoaded, modelLabel, speakerFilter, onSpeaker
 
   // Intercept a timestamp link back into *this* video so it seeks the
   // embedded player instead of leaving the page. Anything else — a link to a
-  // different video, a source, a same-video link with no timestamp — falls
-  // through to the default new-tab behaviour untouched.
+  // different video, a source, a same-video link with no timestamp, or a
+  // Cmd/Ctrl/Shift/middle click asking for a new tab — falls through to the
+  // default new-tab behaviour untouched.
   const handleLinkClick = (href, event) => {
-    if (!videoId) return false;
+    if (!videoId || !isPlainClick(event)) return false;
     if (videoIdFrom(href) !== videoId) return false;
     const seconds = timestampSeconds(href);
     if (seconds === null) return false;

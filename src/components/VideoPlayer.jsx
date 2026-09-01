@@ -2,9 +2,15 @@ import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 're
 
 const EMBED_ORIGIN = 'https://www.youtube-nocookie.com';
 
-// Facade-first YouTube embed for /summary/<videoId>. Nothing loads from
-// YouTube until the user opts in (click, or a timestamp link) — a page full
-// of unwatched summaries never pays iframe weight for it.
+// Facade-first YouTube embed for /summary/<videoId>. Until the user opts in
+// (click, or a timestamp link) the page holds no player: no iframe, no
+// YouTube scripts, no cookies. It is not zero contact — the facade's
+// thumbnail is one request to i.ytimg.com, a cookieless static image host —
+// and `loading="lazy"` does not defer it, because the player is above the
+// fold. `referrerPolicy="no-referrer"` keeps the summary's URL out of it.
+// Proxying the thumbnail through our own origin would close that last gap,
+// but needs a backend route we don't have; not worth one for an image host
+// that sets nothing.
 //
 // Exposes `seek(seconds)` via ref so the summary markdown's timestamp links
 // (rendered by a sibling <Markdown>) can drive this player instead of
@@ -149,7 +155,12 @@ const VideoPlayer = forwardRef(({ videoId, title }, ref) => {
           />
         ) : (
           <button type="button" className="video-facade" aria-label="Play video" onClick={activate}>
-            <img src={`https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`} alt="" loading="lazy" />
+            <img
+              src={`https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`}
+              alt=""
+              loading="lazy"
+              referrerPolicy="no-referrer"
+            />
             <span className="video-facade-play" aria-hidden="true" />
           </button>
         )}
