@@ -39,9 +39,11 @@ export function isVideoId(value) {
   return typeof value === "string" && VIDEO_ID_RE.test(value);
 }
 
-// Pulls the 11-char video id out of any recognised YouTube URL shape.
-// Returns null for anything else, including non-strings.
-export function videoIdFrom(raw) {
+// Shared groundwork for anything that needs a parsed `URL` off a recognised
+// YouTube link — the id extractor below and `timestampSeconds`. Returns null
+// for a non-string, unparseable, or non-YouTube input so every caller gets
+// the same rejection behaviour without re-deriving it.
+function parseYoutubeUrl(raw) {
   if (typeof raw !== "string") return null;
   const trimmed = raw.trim();
   if (!trimmed) return null;
@@ -57,7 +59,14 @@ export function videoIdFrom(raw) {
   } catch {
     return null;
   }
-  if (!YOUTUBE_HOSTS.has(u.hostname.toLowerCase())) return null;
+  return YOUTUBE_HOSTS.has(u.hostname.toLowerCase()) ? u : null;
+}
+
+// Pulls the 11-char video id out of any recognised YouTube URL shape.
+// Returns null for anything else, including non-strings.
+export function videoIdFrom(raw) {
+  const u = parseYoutubeUrl(raw);
+  if (!u) return null;
 
   let id = null;
   if (u.hostname.toLowerCase().endsWith("youtu.be")) {
@@ -70,6 +79,38 @@ export function videoIdFrom(raw) {
   }
 
   return isVideoId(id) ? id : null;
+}
+
+// Matches YouTube's `?t=1h2m3s` / `?t=1m30s` / `?t=90s` shape (also legal with
+// any subset of the three units, in that order). A bare `?t=90` or `?start=90`
+// is handled separately below since it's a plain integer, not this pattern.
+const HMS_RE = /^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/;
+
+// The prompt emits `[HH:MM:SS](https://youtu.be/ID?t=SECONDS)` links so the
+// summary can drive the on-page player without a second parser: this pulls
+// the seconds back out of whichever of YouTube's own timestamp spellings a
+// link uses (`t=90`, `t=90s`, `t=1m30s`, or the embed player's `start=90`).
+// Returns null for no timestamp, a malformed one, or a non-YouTube URL —
+// never throws, so a caller can use it directly as a "should I intercept
+// this click" check.
+export function timestampSeconds(raw) {
+  const u = parseYoutubeUrl(raw);
+  if (!u) return null;
+
+  const t = u.searchParams.get("t");
+  const start = u.searchParams.get("start");
+
+  if (start !== null) {
+    return /^\d+$/.test(start) ? Number(start) : null;
+  }
+  if (t === null) return null;
+  if (/^\d+$/.test(t)) return Number(t);
+
+  const match = t.match(HMS_RE);
+  if (!match || t === "") return null;
+  const [, h, m, s] = match;
+  if (h === undefined && m === undefined && s === undefined) return null;
+  return (Number(h) || 0) * 3600 + (Number(m) || 0) * 60 + (Number(s) || 0);
 }
 
 // The URL a video id is stored under. Every other form — youtu.be, shorts,

@@ -5,7 +5,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { canonicalUrlForId, canonicalYoutubeUrl, isVideoId, videoIdFrom } from "./youtube-url.js";
+import { canonicalUrlForId, canonicalYoutubeUrl, isVideoId, timestampSeconds, videoIdFrom } from "./youtube-url.js";
 
 const ID = "dQw4w9WgXcQ";
 const CANONICAL = `https://www.youtube.com/watch?v=${ID}`;
@@ -87,4 +87,30 @@ test("canonicalYoutubeUrl rejects what videoIdFrom rejects", () => {
   assert.equal(canonicalYoutubeUrl("https://www.youtube.com/@somechannel"), null);
   assert.equal(canonicalYoutubeUrl("not a url at all"), null);
   assert.equal(canonicalYoutubeUrl(null), null);
+});
+
+test("timestampSeconds parses every timestamp shape the summary prompt can emit", () => {
+  assert.equal(timestampSeconds(`https://youtu.be/${ID}?t=90`), 90);
+  assert.equal(timestampSeconds(`https://youtu.be/${ID}?t=90s`), 90);
+  assert.equal(timestampSeconds(`https://youtu.be/${ID}?t=1m30s`), 90);
+  assert.equal(timestampSeconds(`https://youtu.be/${ID}?t=1h2m3s`), 3723);
+  assert.equal(timestampSeconds(`https://www.youtube-nocookie.com/embed/${ID}?start=90`), 90);
+});
+
+test("timestampSeconds returns null for no timestamp, malformed values, or non-YouTube URLs", () => {
+  assert.equal(timestampSeconds(`https://youtu.be/${ID}`), null);
+  assert.equal(timestampSeconds(`https://youtu.be/${ID}?t=abc`), null);
+  assert.equal(timestampSeconds(`https://youtu.be/${ID}?t=`), null);
+  assert.equal(timestampSeconds(`https://youtu.be/${ID}?t=-5`), null);
+  assert.equal(timestampSeconds(`https://youtu.be/${ID}?start=abc`), null);
+  assert.equal(timestampSeconds("https://vimeo.com/12345?t=90"), null);
+  assert.equal(timestampSeconds("not a url at all"), null);
+  assert.equal(timestampSeconds(null), null);
+});
+
+test("timestampSeconds's #t= fragment form is intentionally unsupported", () => {
+  // The prompt only ever emits `?t=`; the `#t=` fragment form some YouTube
+  // UIs produce is out of scope per spec, so this pins that it stays null
+  // rather than silently starting to work by accident.
+  assert.equal(timestampSeconds(`https://youtu.be/${ID}#t=90`), null);
 });
