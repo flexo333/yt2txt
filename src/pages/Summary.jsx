@@ -1,8 +1,10 @@
-import { useEffect, useState } from 'react';
-import { navigate, linkClick } from '../useLocation.js';
+import { useEffect, useRef, useState } from 'react';
+import { navigate, linkClick, isPlainClick } from '../useLocation.js';
 import { hasBackend, getSummary } from '../api.js';
 import Markdown from '../components/Markdown.jsx';
 import SpeakerTags from '../components/SpeakerTags.jsx';
+import VideoPlayer from '../components/VideoPlayer.jsx';
+import { timestampSeconds, videoIdFrom } from '../../backend/summarise/youtube-url.js';
 
 const downloadMarkdown = (text) => {
   const blob = new Blob([text], { type: 'text/markdown' });
@@ -27,6 +29,7 @@ const Summary = ({ id, item, historyLoaded, modelLabel, speakerFilter, onSpeaker
   // { id, status: 'working' | 'error' } — keyed by id like `fetched`, so
   // navigating to another summary mid-regeneration carries nothing over.
   const [regen, setRegen] = useState(null);
+  const playerRef = useRef(null);
 
   const needsFull = Boolean(hasBackend && id && !(item && !item.truncated));
 
@@ -56,6 +59,26 @@ const Summary = ({ id, item, historyLoaded, modelLabel, speakerFilter, onSpeaker
   // True only while the best row we have is a list snippet: the fetch is still
   // running, or it failed / hit an older Lambda without the endpoint.
   const partial = Boolean(shown.truncated);
+
+  // The video embedded above the summary. `videoIdFrom` is the same
+  // extractor the Lambda's `GET ?video=` lookup uses, so this is null only
+  // for a legacy row whose url isn't a recognisable YouTube link.
+  const videoId = videoIdFrom(shown.url);
+
+  // Intercept a timestamp link back into *this* video so it seeks the
+  // embedded player instead of leaving the page. Anything else — a link to a
+  // different video, a source, a same-video link with no timestamp, or a
+  // Cmd/Ctrl/Shift/middle click asking for a new tab — falls through to the
+  // default new-tab behaviour untouched.
+  const handleLinkClick = (href, event) => {
+    if (!videoId || !isPlainClick(event)) return false;
+    if (videoIdFrom(href) !== videoId) return false;
+    const seconds = timestampSeconds(href);
+    if (seconds === null) return false;
+    event.preventDefault();
+    playerRef.current?.seek(seconds);
+    return true;
+  };
 
   const regenerating = Boolean(regen && regen.id === id && regen.status === 'working');
   const regenFailed = Boolean(regen && regen.id === id && regen.status === 'error');
@@ -120,8 +143,9 @@ const Summary = ({ id, item, historyLoaded, modelLabel, speakerFilter, onSpeaker
         <p className="video-title">{shown.videoTitle}</p>
       )}
       <SpeakerTags item={shown} activeSpeaker={speakerFilter} onSelect={onSpeakerSelect} />
+      {videoId && <VideoPlayer ref={playerRef} videoId={videoId} title={shown.videoTitle} />}
       <article className="prose">
-        <Markdown>{shown.summary}</Markdown>
+        <Markdown onLinkClick={handleLinkClick}>{shown.summary}</Markdown>
       </article>
       {partial && (
         <p className="error">
