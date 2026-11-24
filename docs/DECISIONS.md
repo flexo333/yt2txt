@@ -11,8 +11,8 @@ and dated to the commit that shipped each choice rather than to the day it was a
 
 **Context:** The `GET /` history response was 32 KB uncompressed (Function URLs do not compress), and 47.9% of it was a `summary` field the home page stripped down to 200 plain characters anyway.
 **Options:** Compress only; trim the payload only; CloudFront-level compression; both at the source.
-**Choice:** `web.js` gzips every response over 1 KB (`compress.js`, with `Vary: Accept-Encoding`), and `listRow()` sends the video `id` plus a 200-char plain-text snippet instead of the url, 300 chars of markdown, `truncated` and `createdAt`.
-**Consequences:** The wire shape is now `src/api.js`'s business alone: `listItem()` rebuilds `url` and synthesises `truncated: true`. Anything new on a list row must be added to both `listRow()` and `listItem()`.
+**Choice:** `web.js` gzips every response over 1 KB (`compress.js`, with `Vary: Accept-Encoding`), and `listRow()` sends a 200-char plain-text snippet instead of 300 chars of markdown, and drops `createdAt`.
+**Consequences:** `listRow()` is still the single whitelist, so `src/api.js` needs no adapter. A first pass also replaced `url` with the bare video id; code review caught that it breaks the format in both directions while the site and Lambda deploy from separate workflows, and measurement showed it saved only ~106 bytes gzipped, so it was reverted. `History.jsx` still calls `plainSnippet` — idempotent — because a just-generated row carries full markdown.
 
 ## 2026-09-01 — Timestamp links seek an embedded player via bare postMessage
 

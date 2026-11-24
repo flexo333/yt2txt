@@ -6,8 +6,6 @@
 // response shapes in one module means a change to any of them is a change to
 // one file, and no component has to know how the Lambda is addressed.
 
-import { isVideoId, canonicalUrlForId } from '../backend/summarise/youtube-url.js';
-
 const LAMBDA_URL = import.meta.env.VITE_LAMBDA_URL;
 const YT2TXT_KEY = import.meta.env.VITE_YT2TXT_KEY || '';
 
@@ -22,24 +20,14 @@ const jsonHeaders = () => ({ 'Content-Type': 'application/json', ...authHeaders(
 // request at `undefined`.
 export const hasBackend = Boolean(LAMBDA_URL);
 
-// One wire row from GET / → the history-item shape the components expect. The
-// wire carries `id` and a plain-text snippet; `url` is rebuilt here from the id
-// and `truncated` is always true, because a list row can never carry
-// renderable markdown.
-const listItem = ({ id, ...rest }) => ({
-  ...rest,
-  url: isVideoId(id) ? canonicalUrlForId(id) : id,
-  truncated: true,
-});
-
-// GET / → the 50 most recent summaries, newest first. Each row carries the
-// video `id` and a 200-character plain-text `summary` snippet — enough for a
-// list card, never enough to render or download a summary. The full markdown
-// always comes from getSummary() (`?video=`).
+// GET / → the 50 most recent summaries, newest first. Each row's `summary` is
+// a 200-character plain-text snippet, already stripped of markdown server-side,
+// and `truncated` is always true — a list row can never carry renderable
+// markdown. The full markdown always comes from getSummary() (`?video=`).
 export async function listSummaries() {
   const res = await fetch(LAMBDA_URL, { headers: authHeaders() });
   const { summaries } = await res.json();
-  return (summaries || []).map(listItem);
+  return summaries || [];
 }
 
 // GET /?video=<id> → one summary with its full markdown, whatever its age.
