@@ -127,23 +127,26 @@ const LIST_LIMIT = 50;
 // *and* to summaryPayload(). `gsi1pk` is deliberately absent — it is an index
 // key, not data.
 //
-// - The row carries the video `id`, not the full url. The client rebuilds the
-//   canonical url with the shared canonicalUrlForId(); "one video, one row"
-//   guarantees the two biject.
-// - `summary` is ALWAYS a plain-text snippet (plainSnippet(), 200 chars), never
-//   renderable markdown. So the `truncated` flag is gone from the wire — the
-//   client sets it unconditionally — and the full markdown comes from `?video=`.
-// - `createdAt` is gone: nothing in src/ reads it.
-// Measured on a 32 KB list response: the old 300-char markdown `summary` was
-// 47.9% of the bytes and the home page never rendered it as markdown.
+// `summary` is always a plain-text snippet (plainSnippet(), 200 chars), never
+// renderable markdown — the card showed 200 stripped characters anyway, so the
+// stripping happens here and the discarded bytes are never sent. It was 47.9%
+// of a measured 33 KB response. `truncated` therefore stays hard-true: the full
+// markdown always comes from `?video=`.
+//
+// `url` stays, even though the row is addressed by a video id that would be
+// 2.5 KB smaller: the prefix is identical on every row, so gzip reduces the
+// difference to ~106 bytes, and dropping it would break the format in both
+// directions during a deploy (the site and the Lambda ship from separate
+// workflows, and an open tab keeps its old bundle until it reloads).
+// `createdAt` is gone — nothing in src/ reads it, in either direction.
 function listRow({ url, title, date, markdown, model, videoTitle, channelTitle, speakers }) {
   return {
-    id: videoIdFrom(url) || url,
-    title, date, model,
+    url, title, date, model,
     videoTitle: videoTitle || null,
     channelTitle: channelTitle || null,
     speakers: speakers || [],
     summary: plainSnippet(markdown),
+    truncated: true,
   };
 }
 

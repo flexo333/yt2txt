@@ -32,3 +32,23 @@ test("output never exceeds the limit, and a custom limit is honoured", () => {
 test("already-plain short text passes through unchanged", () => {
   assert.equal(plainSnippet("Just a short line."), "Just a short line.");
 });
+
+// src/pages/History.jsx applies plainSnippet to every card, including rows the
+// server already snippeted. That is only safe because it is idempotent.
+test("is idempotent, so re-snippeting a server snippet is a no-op", () => {
+  const markdown = "# A Title\n\n### The Bottom Line\nSome **bold** text with `code`,\nover two lines.\n";
+  const once = plainSnippet(markdown);
+  assert.equal(plainSnippet(once), once);
+  assert.equal(plainSnippet(plainSnippet(once)), once);
+});
+
+// The regression this guards: App.jsx stores the FULL markdown returned by a
+// POST straight into the shared history state, so a just-generated row reaches
+// the History card unsnippeted.
+test("bounds a full markdown body, not just a 300-char snippet", () => {
+  const full = "# T\n\n## Section\n" + "sentence that goes on. ".repeat(500);
+  const out = plainSnippet(full);
+  assert.ok(out.length <= SNIPPET_CHARS);
+  assert.ok(!out.includes("#"));
+  assert.ok(!out.includes("\n"));
+});

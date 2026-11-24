@@ -10,7 +10,7 @@ history on 2026-07-30, when this file was created.
 ## Unreleased
 
 - The app and its data now come from one address, so opening the app no longer waits on a separate connection before the history list can load — about half a second saved on a first visit.
-- The history list loads faster: the response is now compressed and carries only what the cards show, taking it from 33 KB to 8 KB on the wire.
+- The history list loads faster: the response is now compressed and carries only what the cards show, taking it from 33 KB to 8.5 KB on the wire.
 - A summary page now embeds the video: clicking a timestamp in the summary seeks the on-page player instead of opening a new tab. Scroll past the player and it sticks to a corner as a mini-player until dismissed.
 - A summary page now has a Regenerate button: when a summary came out thin, wrong or stale, one click re-watches the video and replaces the stored summary in place. The old text stays until the new one succeeds, and the entry keeps its position in History.
 - The summarise endpoint's public-access policy now carries both permissions AWS has required since October 2025. Nothing changes in normal use; it removes a trap where recreating the endpoint would have made every request fail with a 403 for no visible reason.

@@ -8,8 +8,6 @@
 // header and the response shapes in one module means a change to any of them is
 // a change to one file, and no component has to know how the Lambda is reached.
 
-import { isVideoId, canonicalUrlForId } from '../backend/summarise/youtube-url.js';
-
 // GETs ride the site's own CloudFront distribution at /api/* — the same origin
 // as the page, so the request reuses an open connection and costs no handshake
 // and no CORS preflight. `vite dev` proxies /api to the same Lambda.
@@ -35,24 +33,14 @@ const jsonHeaders = () => ({ 'Content-Type': 'application/json', ...authHeaders(
 // request at `undefined`.
 export const hasBackend = Boolean(LAMBDA_URL);
 
-// One wire row from GET / → the history-item shape the components expect. The
-// wire carries `id` and a plain-text snippet; `url` is rebuilt here from the id
-// and `truncated` is always true, because a list row can never carry
-// renderable markdown.
-const listItem = ({ id, ...rest }) => ({
-  ...rest,
-  url: isVideoId(id) ? canonicalUrlForId(id) : id,
-  truncated: true,
-});
-
-// GET / → the 50 most recent summaries, newest first. Each row carries the
-// video `id` and a 200-character plain-text `summary` snippet — enough for a
-// list card, never enough to render or download a summary. The full markdown
-// always comes from getSummary() (`?video=`).
+// GET / → the 50 most recent summaries, newest first. Each row's `summary` is
+// a 200-character plain-text snippet, already stripped of markdown server-side,
+// and `truncated` is always true — a list row can never carry renderable
+// markdown. The full markdown always comes from getSummary() (`?video=`).
 export async function listSummaries() {
   const res = await fetch(READ_BASE, { headers: authHeaders() });
   const { summaries } = await res.json();
-  return (summaries || []).map(listItem);
+  return summaries || [];
 }
 
 // GET /?video=<id> → one summary with its full markdown, whatever its age.
