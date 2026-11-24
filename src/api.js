@@ -21,8 +21,9 @@ const jsonHeaders = () => ({ 'Content-Type': 'application/json', ...authHeaders(
 export const hasBackend = Boolean(LAMBDA_URL);
 
 // GET / → the 50 most recent summaries, newest first. Each row's `summary` is
-// a ~300-character snippet, flagged with `truncated: true` when it was cut —
-// enough for a list card, not enough to render or download a summary.
+// a 200-character plain-text snippet, already stripped of markdown server-side,
+// and `truncated` is always true — a list row can never carry renderable
+// markdown. The full markdown always comes from getSummary() (`?video=`).
 export async function listSummaries() {
   const res = await fetch(LAMBDA_URL, { headers: authHeaders() });
   const { summaries } = await res.json();

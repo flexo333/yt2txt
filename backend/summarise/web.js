@@ -1,5 +1,6 @@
 import { isHttpEvent } from "./dispatch-pure.js";
 import { handleHttpRequest } from "./handler.js";
+import { gzipResult } from "./compress.js";
 
 // The public Lambda entry: everything behind the Function URL, and nothing
 // else. Internally-invoked jobs (person research, the backfill, the resumer
@@ -24,5 +25,10 @@ export async function handler(event) {
       body: JSON.stringify({ error: "unsupported event" }),
     };
   }
-  return handleHttpRequest(event);
+  // Compression lives here, not in handler.js: this is the single entry behind
+  // the Function URL (which does not compress), so one call covers every
+  // response and handler.js stays a plain request core.
+  const headers = event.headers || {};
+  const key = Object.keys(headers).find((k) => k.toLowerCase() === "accept-encoding");
+  return gzipResult(await handleHttpRequest(event), key && headers[key]);
 }

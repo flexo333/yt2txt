@@ -1,6 +1,7 @@
 import { linkClick } from '../useLocation.js';
 import { summaryPath } from '../paths.js';
 import SpeakerTags from '../components/SpeakerTags.jsx';
+import { plainSnippet } from '../../backend/summarise/snippet.js';
 
 // The full list of summaries, optionally narrowed to one speaker. The filter
 // itself lives in App.jsx because it is set from speaker tags on other routes.
@@ -43,9 +44,16 @@ const History = ({ history, speakerFilter, onClearFilter, onSpeakerSelect, model
                 </div>
                 <h3 className="history-list-title">{item.title || item.url}</h3>
                 {item.videoTitle && <p className="video-title">{item.videoTitle}</p>}
+                {/* The server already snippets list rows, but a row that
+                    came straight from a POST (just generated, or regenerated)
+                    carries the FULL markdown so Summary.jsx can render and
+                    download it. plainSnippet is idempotent, so applying it here
+                    bounds that case without touching the common one — and it
+                    keeps the card correct if an older Lambda is still serving
+                    300 raw markdown characters mid-deploy. */}
                 {item.summary && (
                   <p className="history-list-snippet">
-                    {item.summary.replace(/^#+\s.+\n?/gm, '').replace(/[*_`#]/g, '').trim().slice(0, 200)}…
+                    {plainSnippet(item.summary)}…
                   </p>
                 )}
                 <SpeakerTags
