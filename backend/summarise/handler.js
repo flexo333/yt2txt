@@ -191,10 +191,14 @@ async function getSummaryByVideo(id) {
   }
   const item = await findByVideoId(id);
   if (!item) {
+    // 200, not 404: this passes through a CloudFront behavior on a distribution
+    // whose spa_mode maps 403/404 to /index.html with a 200, distribution-wide
+    // and not scopeable per behavior — a real 404 would reach the browser as the
+    // HTML shell.
     return {
-      statusCode: 404,
+      statusCode: 200,
       headers: JSON_HEADERS,
-      body: JSON.stringify({ error: "not found" }),
+      body: JSON.stringify({ found: false }),
     };
   }
   return {

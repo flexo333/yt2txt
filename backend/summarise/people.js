@@ -438,7 +438,11 @@ export async function getPerson(displayName) {
   const person = normalisePerson(displayName);
   const [record, videos] = await Promise.all([loadPerson(person), loadPersonVideos(person)]);
   if (!record) {
-    return { statusCode: 404, headers: JSON_HEADERS, body: JSON.stringify({ error: "not found" }) };
+    // 200, not 404: this passes through a CloudFront behavior on a distribution
+    // whose spa_mode maps 403/404 to /index.html with a 200, distribution-wide
+    // and not scopeable per behavior — a real 404 would reach the browser as the
+    // HTML shell.
+    return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ found: false }) };
   }
   videos.sort((a, b) => (b.publishedAt || "").localeCompare(a.publishedAt || ""));
   return {

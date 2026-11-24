@@ -7,6 +7,13 @@ in under ten lines. If a choice is obvious from reading the code, it does not be
 The five entries below were reconstructed on 2026-07-30 from the code and from CLAUDE.md,
 and dated to the commit that shipped each choice rather than to the day it was argued.
 
+## 2026-11-24 — Serve the API same-origin at `/api/*` (GETs only)
+
+**Context:** The history fetch spent 565 ms on DNS + TCP + TLS to the Function URL, a second origin, before it could ask for anything.
+**Options:** A `/api/*` behavior on the site's own distribution; a separate `api.` subdomain with its own distribution; defining the distribution inline in this stack instead of via the component.
+**Choice:** The first — `pulumi-static-site` v0.3.0 gained optional `api_origin_domain` / `api_path_pattern`. The behavior allows GET/HEAD/OPTIONS only, because CloudFront caps origin responses at 30 s and a summarise POST runs for minutes.
+**Consequences:** GETs go via `/api/`, POSTs still go direct (so the CORS list stays). `spa_mode` remaps 403/404 to `index.html` for the whole distribution, so no API endpoint may return 403/404 — `?video=` and `?person=` answer 200 + `{ found: false }`. The service worker passes `/api/` through uncached.
+
 ## 2026-11-24 — Gzip at the web.js entry; list rows ship an id and a pre-stripped snippet
 
 **Context:** The `GET /` history response was 32 KB uncompressed (Function URLs do not compress), and 47.9% of it was a `summary` field the home page stripped down to 200 plain characters anyway.
