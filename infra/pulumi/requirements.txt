@@ -1,3 +1,8 @@
 pulumi>=3.0.0,<4.0.0
 pulumi-aws>=7.16.0,<8.0.0
-pulumi-static-site @ git+https://github.com/flexo333/pulumi-static-site.git@v0.3.0
+# TEMPORARY: pinned to the api-origin branch commit, not a tag, because v0.3.0
+# does not exist until flexo333/pulumi-static-site#1 is merged. This makes CI
+# able to run `pulumi preview`, which is the gate on the claim that the
+# distribution is UPDATED and not replaced.
+# >>> SWAP BACK TO @v0.3.0 BEFORE MERGING THIS PR. <<<
+pulumi-static-site @ git+https://github.com/flexo333/pulumi-static-site.git@4fcf06f9ca31e5225b5b08d82832dcbd2aaadb00
