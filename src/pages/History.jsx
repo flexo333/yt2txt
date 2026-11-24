@@ -45,7 +45,7 @@ const History = ({ history, speakerFilter, onClearFilter, onSpeakerSelect, model
                 {item.videoTitle && <p className="video-title">{item.videoTitle}</p>}
                 {item.summary && (
                   <p className="history-list-snippet">
-                    {item.summary.replace(/^#+\s.+\n?/gm, '').replace(/[*_`#]/g, '').trim().slice(0, 200)}…
+                    {item.summary}…
                   </p>
                 )}
                 <SpeakerTags

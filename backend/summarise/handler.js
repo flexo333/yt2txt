@@ -2,7 +2,8 @@ import { GoogleGenAI } from "@google/genai";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, QueryCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
 import { researchPerson, getPerson, listPeople } from "./people.js";
-import { canonicalUrlForId, canonicalYoutubeUrl, isVideoId } from "./youtube-url.js";
+import { canonicalUrlForId, canonicalYoutubeUrl, isVideoId, videoIdFrom } from "./youtube-url.js";
+import { plainSnippet } from "./snippet.js";
 import {
   DEFAULT_MODEL, SUMMARY_INDEX, SUMMARY_INDEX_PK, SUMMARY_INDEX_PK_VALUE,
 } from "./constants.js";
@@ -121,27 +122,28 @@ async function listModels() {
 
 const LIST_LIMIT = 50;
 
-// The list cards render ~200 characters of the summary, so that is all the list
-// response carries. Shipping whole summaries (up to 8 KB × 50 rows) made every
-// cold load pay for the entire archive just so the detail page could read the
-// markdown out of memory; it fetches the full row from `?video=` instead.
-const LIST_MARKDOWN_CHARS = 300;
-
-// Whitelists what reaches the client: an attribute added to the item is
-// invisible to `GET /` until it is added here *and* to summaryPayload().
-// `gsi1pk` is deliberately absent — it is an index key, not data.
-function listRow({ url, title, date, createdAt, markdown, model, videoTitle, channelTitle, speakers }) {
-  const full = markdown || "";
-  const summary = full.slice(0, LIST_MARKDOWN_CHARS);
+// The wire contract for `GET /` rows, and the field whitelist for it: an
+// attribute added to the item is invisible to `GET /` until it is added here
+// *and* to summaryPayload(). `gsi1pk` is deliberately absent — it is an index
+// key, not data.
+//
+// - The row carries the video `id`, not the full url. The client rebuilds the
+//   canonical url with the shared canonicalUrlForId(); "one video, one row"
+//   guarantees the two biject.
+// - `summary` is ALWAYS a plain-text snippet (plainSnippet(), 200 chars), never
+//   renderable markdown. So the `truncated` flag is gone from the wire — the
+//   client sets it unconditionally — and the full markdown comes from `?video=`.
+// - `createdAt` is gone: nothing in src/ reads it.
+// Measured on a 32 KB list response: the old 300-char markdown `summary` was
+// 47.9% of the bytes and the home page never rendered it as markdown.
+function listRow({ url, title, date, markdown, model, videoTitle, channelTitle, speakers }) {
   return {
-    url, title, date, createdAt, model,
+    id: videoIdFrom(url) || url,
+    title, date, model,
     videoTitle: videoTitle || null,
     channelTitle: channelTitle || null,
     speakers: speakers || [],
-    summary,
-    // Tells the detail page the markdown it has is a snippet, so it fetches the
-    // real row before rendering or offering a download.
-    ...(summary.length < full.length ? { truncated: true } : {}),
+    summary: plainSnippet(markdown),
   };
 }
 
