@@ -1,5 +1,6 @@
 // The model used when a request does not specify one. Must appear in
-// models.js's FALLBACK_MODELS and pass its isWantedModel() filter.
+// models-pure.js's FALLBACK_MODELS and pass its isWantedModel() filter —
+// models-pure.test.mjs pins both.
 export const DEFAULT_MODEL = "models/gemini-flash-latest";
 
 // Gemini bills video at 258 frame tokens per sampled frame (66 at low media

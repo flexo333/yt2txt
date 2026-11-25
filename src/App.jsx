@@ -12,11 +12,15 @@ import Summary from './pages/Summary.jsx';
 
 const PREFERRED_DEFAULT = 'models/gemini-flash-latest';
 
-// Rendered while the ?models=1 fetch is pending or if it fails.
+// Rendered while the ?models=1 fetch is pending or if it fails. Mirrors
+// FALLBACK_MODELS in backend/summarise/models-pure.js — keep the two in step so
+// a dropdown rendered without the backend offers nothing the backend's own
+// allow-list would then reject.
 const FALLBACK_MODEL_OPTIONS = [
   { label: 'Gemini Flash Latest', value: 'models/gemini-flash-latest' },
-  { label: 'Gemini 3 Flash', value: 'models/gemini-3-flash-preview' },
-  { label: 'Gemini 3.1 Flash Lite', value: 'models/gemini-flash-lite-latest' },
+  { label: 'Gemini Flash Lite Latest', value: 'models/gemini-flash-lite-latest' },
+  { label: 'Gemini 3.8 Flash', value: 'models/gemini-3.8-flash' },
+  { label: 'Gemini 3.5 Flash Lite', value: 'models/gemini-3.5-flash-lite' },
   { label: 'Gemini 2.5 Flash', value: 'models/gemini-2.5-flash' },
   { label: 'Gemini 2.5 Flash Lite', value: 'models/gemini-2.5-flash-lite' },
 ];
