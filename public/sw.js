@@ -7,7 +7,7 @@
  * Bump VERSION to force every client to drop its caches on the next activate.
  */
 
-const VERSION = 'v1';
+const VERSION = 'v2';
 const SHELL_CACHE = `yt2txt-shell-${VERSION}`;
 const ASSET_CACHE = `yt2txt-assets-${VERSION}`;
 const CURRENT_CACHES = [SHELL_CACHE, ASSET_CACHE];
@@ -101,9 +101,16 @@ self.addEventListener('fetch', (event) => {
 
   const url = new URL(request.url);
 
-  // Cross-origin (the Lambda Function URL, Google Fonts) goes straight to the
-  // network: summaries must never be served stale, and opaque font responses
-  // are not worth managing here.
+  // The API is same-origin now (CloudFront maps /api/* to the Lambda Function
+  // URL), so the cross-origin bail below no longer covers it. Summaries must
+  // never be served stale — a cached ?video= response would outlive a
+  // Regenerate — so this stays a pure network passthrough.
+  if (url.pathname.startsWith('/api/')) return;
+
+  // Cross-origin (the Lambda Function URL for POSTs, Google Fonts) goes
+  // straight to the network: summaries must never be served stale, and opaque
+  // font responses are not worth managing here. This is only half the story —
+  // same-origin /api/ is handled by the early return above.
   if (url.origin !== self.location.origin) return;
 
   if (request.mode === 'navigate') {
