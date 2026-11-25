@@ -54,14 +54,6 @@ else:
     zone_id = _zone.zone_id
     pulumi.export("nameservers", _zone.name_servers)
 
-site = StaticSite(
-    "yt2txt",
-    domain=domain_name,
-    zone_id=zone_id,
-    bucket_name=bucket_name,
-    spa_mode=True,
-)
-
 # ── DynamoDB tables ───────────────────────────────────────────────────────────
 # byCreatedAt: the history feed. The table is keyed by url, so "the newest 50"
 # has to come from an index — a Scan returns rows in hash order. Every summary
@@ -353,6 +345,33 @@ fn_url = aws.lambda_.FunctionUrl(
         max_age=300,
     ),
     opts=pulumi.ResourceOptions(depends_on=[url_permission, url_invoke_permission]),
+)
+
+# ── Static site + same-origin API ─────────────────────────────────────────────
+# The site and the API share one CloudFront distribution: GETs to /api/* are
+# forwarded to the Lambda Function URL. A browser calling a second origin paid
+# 565 ms of DNS + TCP + TLS before it could even ask for the history list;
+# through the site's own distribution the fetch reuses the HTTP/2 connection the
+# page and bundle already arrived on, TLS terminates at the viewer's local edge
+# POP, and CloudFront keeps warm keep-alive connections to the origin.
+#
+# This is declared here, after the Function URL, only because it needs the
+# URL's hostname. Pulumi does not care about declaration order, so the resource
+# keeps its name and URN and is not moved or replaced.
+#
+# api_path_pattern defaults to "/api/*" and that behavior carries GET/HEAD/
+# OPTIONS only (CloudFront caps an origin response at 30 s, and a summarise POST
+# runs for minutes). That is why the CORS block on the Function URL above
+# survives: POSTs still go direct to the Function URL.
+site = StaticSite(
+    "yt2txt",
+    domain=domain_name,
+    zone_id=zone_id,
+    bucket_name=bucket_name,
+    spa_mode=True,
+    api_origin_domain=fn_url.function_url.apply(
+        lambda u: u.removeprefix("https://").rstrip("/")
+    ),
 )
 
 # ── Exports ───────────────────────────────────────────────────────────────────
