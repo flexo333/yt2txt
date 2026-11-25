@@ -279,15 +279,18 @@ aws.iam.RolePolicy(
 
 # ── Person-job resumer schedule ───────────────────────────────────────────────
 # Person research runs synchronously and self-invokes its own continuations;
-# this rule is a safety net. It wakes the Lambda every 3 min so people.js
+# this rule is a safety net. It wakes the Lambda every 5 min so people.js
 # `resumeStalledJobs` can restart any job whose Lambda was killed mid-run.
+# 5 min against the 10-min stall threshold (STALL_THRESHOLD_MS) still catches a
+# stalled job within one tick of it crossing the threshold; a faster cadence
+# only buys invocations that cannot find anything.
 poll_rule = aws.cloudwatch.EventRule(
     "summarise-poll-rule",
     # The CI infra role (ingress stack) scopes events:* to rule names matching
     # yt2txt-* / flexo333-*, so the physical name must match one of those or CI
     # cannot manage this rule.
     name="yt2txt-summarise-poll-rule",
-    schedule_expression="rate(3 minutes)",
+    schedule_expression="rate(5 minutes)",
     description="Resume stalled yt2txt person-research jobs",
 )
 

@@ -11,7 +11,6 @@ One line per item, each pointing at the code it came from.
 
 - A cache hit returns the stored summary whatever model was asked for, labelled with the old model — either say so in the UI or key the cache on `(videoId, model)` (`backend/summarise/handler.js:109`)
 - The selected person lives in `useState`, not the URL, so it is the only view in the app you cannot link to or refresh — `/people/<name>` would finish the History-API migration (`src/pages/People.jsx:12`)
-- The stall resumer fires `rate(3 minutes)` against a 10-minute stall threshold — ~14,400 invocations a month to detect something that cannot be true more than a fifth of the time; `rate(5 minutes)` loses nothing (`infra/pulumi/__main__.py:298`)
 
 ## Later
 
