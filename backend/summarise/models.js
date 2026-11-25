@@ -1,49 +1,18 @@
 import { GoogleGenAI } from "@google/genai";
-import { DEFAULT_MODEL } from "./constants.js";
+import { FALLBACK_MODELS, filterModels, isWantedModel } from "./models-pure.js";
 
 // The allowed-model list, shared by both Lambda entries: the web path uses it
 // for `?models=1`, for validating a requested model, and to build the summarise
 // fallback chain; the worker uses it to build the same chain for a person job.
 // Derived from ai.models.list() so the dropdown and the request allow-list
-// cannot drift — to change which models appear, edit isWantedModel().
+// cannot drift — to change which models appear, edit isWantedModel() in
+// models-pure.js, which also owns FALLBACK_MODELS.
 
 const MODEL_CACHE_SUCCESS_TTL_MS = 24 * 60 * 60 * 1000;
 const MODEL_CACHE_FALLBACK_TTL_MS = 5 * 60 * 1000;
 
-// Used when ai.models.list() fails or returns nothing usable, so summarising
-// and request validation never hard-fail on a Google API hiccup.
-const FALLBACK_MODELS = [
-  { value: DEFAULT_MODEL, label: "Gemini Flash Latest" },
-  { value: "models/gemini-3-flash-preview", label: "Gemini 3 Flash" },
-  { value: "models/gemini-flash-lite-latest", label: "Gemini 3.1 Flash Lite" },
-  { value: "models/gemini-2.5-flash", label: "Gemini 2.5 Flash" },
-  { value: "models/gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite" },
-];
-
-// Gemini Flash family only. Gemma was dropped 2026-07-31: it could never be
-// reached as a fallback (buildModelChain caps at 4 and the list is
-// Gemini-first), and its missing responseSchema support was all that kept the
-// speaker-trailer machinery alive — see the structured-output spec.
-function isWantedModel(name) {
-  const n = name.toLowerCase();
-  if (["tts", "image", "audio", "live"].some((bad) => n.includes(bad))) return false;
-  return n.includes("gemini") && n.includes("flash");
-}
-
-// Pure: maps raw @google/genai Model objects to sorted [{ value, label }].
-// Exported so it can be smoke-tested without a network call.
-export function filterModels(rawModels) {
-  return (rawModels || [])
-    .filter(
-      (m) =>
-        m &&
-        typeof m.name === "string" &&
-        (m.supportedActions || []).includes("generateContent") &&
-        isWantedModel(m.name),
-    )
-    .map((m) => ({ value: m.name, label: m.displayName || m.name }))
-    .sort((a, b) => b.value.localeCompare(a.value));
-}
+// Re-exported so callers (and the old import sites) need only this module.
+export { FALLBACK_MODELS, filterModels, isWantedModel };
 
 let modelCache = { expires: 0, list: null };
 

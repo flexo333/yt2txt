@@ -16,6 +16,7 @@ One line per item, each pointing at the code it came from.
 
 ## Later
 
+- The AI Studio catalog lists `Gemini 4 Hydrogen` with the same free-tier limits as the Flash tiers (5 RPM / 250K TPM / 20 RPD) while Neon, Carbon and Argon sit at 0/0, which reads like the Gemini 4 tier this key can reach — but the Gemini 4 names carry no tier word, so `isWantedModel()` cannot admit it without naming it explicitly, and its video+`responseSchema` support is unverified (`backend/summarise/models-pure.js`)
 - `callMeta` in `people.js` still extracts its meta-summary JSON with a regex — now that every allowed model is Gemini, it could use `responseSchema` like the summarise path (`backend/summarise/people.js:200`)
 - Suggest one "catch-up" video per tracked person — the single best thing to watch to absorb their current point of view, instead of reading eight summaries
 - People detail polls through two effects sharing one mutable `pollRef`; a single effect keyed on "is the status terminal" would be easier to reason about, and pausing the 3-second poll on a hidden tab is free (`src/pages/People.jsx:35`)
