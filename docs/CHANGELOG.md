@@ -9,6 +9,7 @@ history on 2026-07-30, when this file was created.
 
 ## Unreleased
 
+- Sharing a second link while the share screen is still open now summarises the new link instead of silently doing nothing, and the first share can no longer pull you away from the second when it finishes.
 - The model dropdown is refreshed against the current Google AI Studio catalog: the newest Flash and Flash-Lite releases are offered, and the image, speech, Live and Omni variants that share a "flash" name but cannot write a summary can no longer appear in it.
 - The app and its data now come from one address, so opening the app no longer waits on a separate connection before the history list can load — about half a second saved on a first visit.
 - The history list loads faster: the response is now compressed and carries only what the cards show, taking it from 33 KB to 8.5 KB on the wire.
