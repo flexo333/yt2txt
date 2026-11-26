@@ -48,9 +48,16 @@ const BrightBlogApp = () => {
   const [share, setShare] = useState(null);
   // Speaker tag currently filtering the History page, or null for everything.
   const [speakerFilter, setSpeakerFilter] = useState(null);
-  const shareStarted = useRef(false);
+  // The query string of the last /share navigation acted on, so a re-render
+  // never re-fires a share but a new one (/share?url=A → /share?url=B) does.
+  const shareHandled = useRef(null);
+  // A token for the share currently in flight, unique per runShare call (not
+  // the url: two shares can canonicalise to one video, and A → B → A repeats
+  // one). A superseded request still lands in history, but must not navigate
+  // away from the newer share or overwrite its state.
+  const shareCurrent = useRef(null);
 
-  const path = useLocation();
+  const { pathname: path, search } = useLocation();
   const normalized = path.replace(/\/+$/, '') || '/';
   const summaryId = normalized.startsWith('/summary/')
     ? decodeId(normalized.slice('/summary/'.length))
@@ -139,14 +146,20 @@ const BrightBlogApp = () => {
   // Registered in public/manifest.json. Android hands the shared link over as
   // a GET navigation; summarise it with Flash Latest and land on the result.
   const runShare = React.useCallback(async (targetUrl) => {
+    const token = {};
+    shareCurrent.current = token;
     setShare({ status: 'working', url: targetUrl });
     try {
       const item = await requestSummary(targetUrl, SHARE_MODEL);
+      if (shareCurrent.current !== token) return;
+      shareCurrent.current = null;
       setShare(null);
       // replace: Back from the summary should not re-run the share.
       navigate(summaryPath(item), { replace: true });
     } catch (error) {
       console.error(error);
+      if (shareCurrent.current !== token) return;
+      shareCurrent.current = null;
       setShare({
         status: 'error',
         url: targetUrl,
@@ -158,12 +171,13 @@ const BrightBlogApp = () => {
   }, []);
 
   useEffect(() => {
-    if (page !== 'share' || shareStarted.current) return;
-    shareStarted.current = true;
+    if (page !== 'share' || shareHandled.current === search) return;
+    shareHandled.current = search;
 
-    const params = new URLSearchParams(window.location.search);
+    const params = new URLSearchParams(search);
     const shared = shareTargetUrl(params);
     if (!shared) {
+      shareCurrent.current = null;
       setShare({
         status: 'invalid',
         message: 'That share did not contain a YouTube link.',
@@ -172,11 +186,12 @@ const BrightBlogApp = () => {
       return;
     }
     if (!hasBackend) {
+      shareCurrent.current = null;
       setShare({ status: 'error', url: shared, message: 'Backend URL is not configured.' });
       return;
     }
     runShare(shared);
-  }, [page, runShare]);
+  }, [page, search, runShare]);
 
   const modelLabel = (value) => {
     if (!value) return '';

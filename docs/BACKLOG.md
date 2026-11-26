@@ -9,7 +9,6 @@ One line per item, each pointing at the code it came from.
 
 ## Next
 
-- `navigate()` ignores the query string, so `/share?url=A` → `/share?url=B` is a silent no-op — `src/useLocation.js` snapshots `pathname` only and early-returns when it matches
 - A cache hit returns the stored summary whatever model was asked for, labelled with the old model — either say so in the UI or key the cache on `(videoId, model)` (`backend/summarise/handler.js:109`)
 - The selected person lives in `useState`, not the URL, so it is the only view in the app you cannot link to or refresh — `/people/<name>` would finish the History-API migration (`src/pages/People.jsx:12`)
 
