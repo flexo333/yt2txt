@@ -51,8 +51,10 @@ const BrightBlogApp = () => {
   // The query string of the last /share navigation acted on, so a re-render
   // never re-fires a share but a new one (/share?url=A → /share?url=B) does.
   const shareHandled = useRef(null);
-  // The url of the share currently in flight. A superseded request still
-  // lands in history, but must not navigate away from the newer share.
+  // A token for the share currently in flight, unique per runShare call (not
+  // the url: two shares can canonicalise to one video, and A → B → A repeats
+  // one). A superseded request still lands in history, but must not navigate
+  // away from the newer share or overwrite its state.
   const shareCurrent = useRef(null);
 
   const { pathname: path, search } = useLocation();
@@ -144,18 +146,19 @@ const BrightBlogApp = () => {
   // Registered in public/manifest.json. Android hands the shared link over as
   // a GET navigation; summarise it with Flash Latest and land on the result.
   const runShare = React.useCallback(async (targetUrl) => {
-    shareCurrent.current = targetUrl;
+    const token = {};
+    shareCurrent.current = token;
     setShare({ status: 'working', url: targetUrl });
     try {
       const item = await requestSummary(targetUrl, SHARE_MODEL);
-      if (shareCurrent.current !== targetUrl) return;
+      if (shareCurrent.current !== token) return;
       shareCurrent.current = null;
       setShare(null);
       // replace: Back from the summary should not re-run the share.
       navigate(summaryPath(item), { replace: true });
     } catch (error) {
       console.error(error);
-      if (shareCurrent.current !== targetUrl) return;
+      if (shareCurrent.current !== token) return;
       shareCurrent.current = null;
       setShare({
         status: 'error',
